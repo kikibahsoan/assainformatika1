@@ -126,6 +126,34 @@ function setupSpreadsheet() {
   return "Setup 9 Sheet ASSA Informatika SMKN 2 Gorontalo selesai!";
 }
 
+function hashPassword(raw) {
+  var input = String(raw).trim() + "::" + SALT;
+  var digest = Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, input);
+  var hex = "";
+  for (var i = 0; i < digest.length; i++) {
+    var b = (digest[i] < 0 ? digest[i] + 256 : digest[i]).toString(16);
+    if (b.length === 1) hex += "0";
+    hex += b;
+  }
+  return hex;
+}
+
+function getOrCreateSheet(ss, sheetName, defaultHeaders) {
+  if (!ss) return null;
+  var sheet = ss.getSheetByName(sheetName);
+  if (!sheet) {
+    sheet = ss.insertSheet(sheetName);
+    if (defaultHeaders && defaultHeaders.length > 0) {
+      sheet.getRange(1, 1, 1, defaultHeaders.length).setValues([defaultHeaders]).setFontWeight("bold");
+      sheet.setFrozenRows(1);
+    }
+  } else if (sheet.getLastRow() === 0 && defaultHeaders && defaultHeaders.length > 0) {
+    sheet.getRange(1, 1, 1, defaultHeaders.length).setValues([defaultHeaders]).setFontWeight("bold");
+    sheet.setFrozenRows(1);
+  }
+  return sheet;
+}
+
 function doGet(e) {
   return ContentService
     .createTextOutput(JSON.stringify({ ok: true, service: "ASSA Informatika SMKN 2 Gorontalo CBT API", serverTime: new Date().toISOString() }))
@@ -138,7 +166,10 @@ function doPost(e) {
     var action = body.action;
     var result = {};
 
-    if (action === "getQuestionsForStudent") {
+    if (action === "setupSpreadsheet") {
+      var msg = setupSpreadsheet();
+      result = { ok: true, message: msg, serverTime: new Date().toISOString() };
+    } else if (action === "getQuestionsForStudent") {
       result = handleGetQuestionsForStudent(body);
     } else if (action === "studentLogin") {
       result = handleStudentLogin(body);
@@ -170,7 +201,9 @@ function handleStudentLogin(body) {
   var lock = LockService.getScriptLock();
   if (!lock.tryLock(5000)) return { ok: false, retry: true };
   try {
-    var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName("Sesi");
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var sesiHeaders = ["NIS", "ruang", "token_sesi", "waktu_mulai", "batas_waktu", "tambahan_menit", "status", "jumlah_pelanggaran", "soal_terakhir", "waktu_aktif_terakhir"];
+    var sheet = getOrCreateSheet(ss, "Sesi", sesiHeaders);
     if (sheet) {
       var s = body.sesi || {};
       var nis = String(s.nis || body.nis || "").trim();
@@ -214,7 +247,12 @@ function handleGetQuestionsForStudent(body) {
     return { ok: true, questions: JSON.parse(cached), serverTime: new Date().toISOString() };
   }
 
-  var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName("Bank_Soal");
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var qHeaders = ["id", "no", "tipe", "stimulus", "teks", "gambar_url", "opsi_A", "opsi_B", "opsi_C", "opsi_D", "opsi_E", "kunci", "bobot"];
+  var sheet = getOrCreateSheet(ss, "Bank_Soal", qHeaders);
+  if (!sheet || sheet.getLastRow() <= 1) {
+    return { ok: true, questions: [], serverTime: new Date().toISOString() };
+  }
   var data = sheet.getDataRange().getValues();
   var publicQuestions = [];
 
@@ -252,7 +290,7 @@ function handleSaveAnswerBatch(body) {
 
   try {
     var ss = SpreadsheetApp.getActiveSpreadsheet();
-    var sheet = ss.getSheetByName("Jawaban");
+    var sheet = getOrCreateSheet(ss, "Jawaban", ["NIS", "no_soal", "jawaban", "waktu_simpan"]);
     var keys = Object.keys(answers);
     var savedCount = 0;
 
@@ -286,8 +324,9 @@ function handleSaveAnswerBatch(body) {
       }
     }
 
-    // Update Sesi sheet soal_terakhir & waktu_aktif_terakhir in real-time
-    var sesiSheet = ss.getSheetByName("Sesi");
+    // Update Sesi sheet soal_terakhir & waktu_aktif_terakhir in real-time (auto-creates Sesi sheet if missing)
+    var sesiHeaders = ["NIS", "ruang", "token_sesi", "waktu_mulai", "batas_waktu", "tambahan_menit", "status", "jumlah_pelanggaran", "soal_terakhir", "waktu_aktif_terakhir"];
+    var sesiSheet = getOrCreateSheet(ss, "Sesi", sesiHeaders);
     if (sesiSheet && nis) {
       var sData = sesiSheet.getDataRange().getValues();
       var foundRow = -1;
@@ -328,14 +367,17 @@ function handleLogViolation(body) {
   if (!lock.tryLock(5000)) return { ok: false, retry: true };
   try {
     var ss = SpreadsheetApp.getActiveSpreadsheet();
-    var sheet = ss.getSheetByName("Log_Pelanggaran");
+    var sheet = getOrCreateSheet(ss, "Log_Pelanggaran", ["waktu", "NIS", "jenis_pelanggaran", "keterangan"]);
     var nowIso = new Date().toISOString();
     var nis = String(body.nis || "");
     var row = [nowIso, nis, String(body.jenis || ""), String(body.keterangan || "")];
-    sheet.getRange(sheet.getLastRow() + 1, 1, 1, 4).setValues([row]);
+    if (sheet) {
+      sheet.getRange(sheet.getLastRow() + 1, 1, 1, 4).setValues([row]);
+    }
 
     // Update jumlah_pelanggaran in Sesi sheet
-    var sesiSheet = ss.getSheetByName("Sesi");
+    var sesiHeaders = ["NIS", "ruang", "token_sesi", "waktu_mulai", "batas_waktu", "tambahan_menit", "status", "jumlah_pelanggaran", "soal_terakhir", "waktu_aktif_terakhir"];
+    var sesiSheet = getOrCreateSheet(ss, "Sesi", sesiHeaders);
     if (sesiSheet && nis) {
       var sData = sesiSheet.getDataRange().getValues();
       for (var r = 1; r < sData.length; r++) {
@@ -358,19 +400,34 @@ function handleSubmitExam(body) {
   if (!lock.tryLock(5000)) return { ok: false, retry: true };
   try {
     var ss = SpreadsheetApp.getActiveSpreadsheet();
-    var sheet = ss.getSheetByName("Nilai");
-    if (body.nilai) {
+    var nilaiHeaders = ["NIS", "nama", "kelas", "skor_pg", "skor_pgk", "skor_menjodohkan", "skor_isian", "skor_uraian", "nilai_akhir", "status_uraian"];
+    var sheet = getOrCreateSheet(ss, "Nilai", nilaiHeaders);
+    if (sheet && body.nilai) {
       var n = body.nilai;
+      var nis = String(n.nis || body.nis || "").trim();
       var row = [
-        String(n.nis), String(n.nama), String(n.kelas),
+        nis, String(n.nama || ""), String(n.kelas || ""),
         Number(n.skor_pg || 0), Number(n.skor_pgk || 0),
         Number(n.skor_menjodohkan || 0), Number(n.skor_isian || 0),
         Number(n.skor_uraian || 0), Number(n.nilai_akhir || 0),
         String(n.status_uraian || "BELUM")
       ];
-      sheet.getRange(sheet.getLastRow() + 1, 1, 1, 10).setValues([row]);
+      var nData = sheet.getDataRange().getValues();
+      var foundRow = -1;
+      for (var i = 1; i < nData.length; i++) {
+        if (String(nData[i][0]).trim() === nis) {
+          foundRow = i + 1;
+          break;
+        }
+      }
+      if (foundRow > 1) {
+        sheet.getRange(foundRow, 1, 1, 10).setValues([row]);
+      } else {
+        sheet.getRange(sheet.getLastRow() + 1, 1, 1, 10).setValues([row]);
+      }
     }
-    var sesiSheet = ss.getSheetByName("Sesi");
+    var sesiHeaders = ["NIS", "ruang", "token_sesi", "waktu_mulai", "batas_waktu", "tambahan_menit", "status", "jumlah_pelanggaran", "soal_terakhir", "waktu_aktif_terakhir"];
+    var sesiSheet = getOrCreateSheet(ss, "Sesi", sesiHeaders);
     if (sesiSheet && body.nis) {
       var sData = sesiSheet.getDataRange().getValues();
       for (var r = 1; r < sData.length; r++) {
@@ -394,89 +451,84 @@ function handleSyncAllToSpreadsheet(body) {
     var ss = SpreadsheetApp.getActiveSpreadsheet();
 
     // 1. Sinkron Sheet Sesi
-    if (body.sesi) {
-      var sesiSheet = ss.getSheetByName("Sesi");
-      if (sesiSheet) {
-        var sesiKeys = Object.keys(body.sesi);
-        if (sesiKeys.length > 0) {
-          sesiSheet.clearContents();
-          var sesiHeaders = ["NIS", "ruang", "token_sesi", "waktu_mulai", "batas_waktu", "tambahan_menit", "status", "jumlah_pelanggaran", "soal_terakhir", "waktu_aktif_terakhir"];
-          var sesiRows = [sesiHeaders];
-          for (var i = 0; i < sesiKeys.length; i++) {
-            var s = body.sesi[sesiKeys[i]];
-            sesiRows.push([
-              String(s.nis || sesiKeys[i]),
-              String(s.ruang || ""),
-              String(s.token_sesi || ""),
-              String(s.waktu_mulai || ""),
-              String(s.batas_waktu || ""),
-              Number(s.tambahan_menit || 0),
-              String(s.status || "MENGERJAKAN"),
-              Number(s.jumlah_pelanggaran || 0),
-              Number(s.soal_terakhir || 1),
-              String(s.waktu_aktif_terakhir || "")
-            ]);
-          }
-          sesiSheet.getRange(1, 1, sesiRows.length, sesiHeaders.length).setValues(sesiRows);
+    var sesiHeaders = ["NIS", "ruang", "token_sesi", "waktu_mulai", "batas_waktu", "tambahan_menit", "status", "jumlah_pelanggaran", "soal_terakhir", "waktu_aktif_terakhir"];
+    var sesiSheet = getOrCreateSheet(ss, "Sesi", sesiHeaders);
+    if (body.sesi && sesiSheet) {
+      var sesiKeys = Object.keys(body.sesi);
+      if (sesiKeys.length > 0) {
+        sesiSheet.clearContents();
+        var sesiRows = [sesiHeaders];
+        for (var i = 0; i < sesiKeys.length; i++) {
+          var s = body.sesi[sesiKeys[i]];
+          sesiRows.push([
+            String(s.nis || sesiKeys[i]),
+            String(s.ruang || ""),
+            String(s.token_sesi || ""),
+            String(s.waktu_mulai || ""),
+            String(s.batas_waktu || ""),
+            Number(s.tambahan_menit || 0),
+            String(s.status || "MENGERJAKAN"),
+            Number(s.jumlah_pelanggaran || 0),
+            Number(s.soal_terakhir || 1),
+            String(s.waktu_aktif_terakhir || "")
+          ]);
         }
+        sesiSheet.getRange(1, 1, sesiRows.length, sesiHeaders.length).setValues(sesiRows);
       }
     }
 
     // 2. Sinkron Sheet Jawaban
-    if (body.jawaban) {
-      var jwbSheet = ss.getSheetByName("Jawaban");
-      if (jwbSheet) {
-        var nisList = Object.keys(body.jawaban);
-        var jwbRows = [["NIS", "no_soal", "jawaban", "waktu_simpan"]];
-        for (var j = 0; j < nisList.length; j++) {
-          var nisKey = nisList[j];
-          var perSoal = body.jawaban[nisKey] || {};
-          var noList = Object.keys(perSoal);
-          for (var k = 0; k < noList.length; k++) {
-            var item = perSoal[noList[k]];
-            if (item && String(item.jawaban || "").trim() !== "") {
-              jwbRows.push([
-                String(nisKey),
-                Number(item.no_soal || noList[k]),
-                String(item.jawaban),
-                String(item.waktu_simpan || new Date().toISOString())
-              ]);
-            }
+    var jwbHeaders = ["NIS", "no_soal", "jawaban", "waktu_simpan"];
+    var jwbSheet = getOrCreateSheet(ss, "Jawaban", jwbHeaders);
+    if (body.jawaban && jwbSheet) {
+      var nisList = Object.keys(body.jawaban);
+      var jwbRows = [jwbHeaders];
+      for (var j = 0; j < nisList.length; j++) {
+        var nisKey = nisList[j];
+        var perSoal = body.jawaban[nisKey] || {};
+        var noList = Object.keys(perSoal);
+        for (var k = 0; k < noList.length; k++) {
+          var item = perSoal[noList[k]];
+          if (item && String(item.jawaban || "").trim() !== "") {
+            jwbRows.push([
+              String(nisKey),
+              Number(item.no_soal || noList[k]),
+              String(item.jawaban),
+              String(item.waktu_simpan || new Date().toISOString())
+            ]);
           }
         }
-        if (jwbRows.length > 1) {
-          jwbSheet.clearContents();
-          jwbSheet.getRange(1, 1, jwbRows.length, 4).setValues(jwbRows);
-        }
+      }
+      if (jwbRows.length > 1) {
+        jwbSheet.clearContents();
+        jwbSheet.getRange(1, 1, jwbRows.length, 4).setValues(jwbRows);
       }
     }
 
     // 3. Sinkron Sheet Nilai
-    if (body.nilai) {
-      var nilaiSheet = ss.getSheetByName("Nilai");
-      if (nilaiSheet) {
-        var nilaiKeys = Object.keys(body.nilai);
-        if (nilaiKeys.length > 0) {
-          nilaiSheet.clearContents();
-          var nilaiHeaders = ["NIS", "nama", "kelas", "skor_pg", "skor_pgk", "skor_menjodohkan", "skor_isian", "skor_uraian", "nilai_akhir", "status_uraian"];
-          var nilaiRows = [nilaiHeaders];
-          for (var m = 0; m < nilaiKeys.length; m++) {
-            var n = body.nilai[nilaiKeys[m]];
-            nilaiRows.push([
-              String(n.nis || nilaiKeys[m]),
-              String(n.nama || ""),
-              String(n.kelas || ""),
-              Number(n.skor_pg || 0),
-              Number(n.skor_pgk || 0),
-              Number(n.skor_menjodohkan || 0),
-              Number(n.skor_isian || 0),
-              Number(n.skor_uraian || 0),
-              Number(n.nilai_akhir || 0),
-              String(n.status_uraian || "BELUM")
-            ]);
-          }
-          nilaiSheet.getRange(1, 1, nilaiRows.length, nilaiHeaders.length).setValues(nilaiRows);
+    var nilaiHeaders = ["NIS", "nama", "kelas", "skor_pg", "skor_pgk", "skor_menjodohkan", "skor_isian", "skor_uraian", "nilai_akhir", "status_uraian"];
+    var nilaiSheet = getOrCreateSheet(ss, "Nilai", nilaiHeaders);
+    if (body.nilai && nilaiSheet) {
+      var nilaiKeys = Object.keys(body.nilai);
+      if (nilaiKeys.length > 0) {
+        nilaiSheet.clearContents();
+        var nilaiRows = [nilaiHeaders];
+        for (var m = 0; m < nilaiKeys.length; m++) {
+          var n = body.nilai[nilaiKeys[m]];
+          nilaiRows.push([
+            String(n.nis || nilaiKeys[m]),
+            String(n.nama || ""),
+            String(n.kelas || ""),
+            Number(n.skor_pg || 0),
+            Number(n.skor_pgk || 0),
+            Number(n.skor_menjodohkan || 0),
+            Number(n.skor_isian || 0),
+            Number(n.skor_uraian || 0),
+            Number(n.nilai_akhir || 0),
+            String(n.status_uraian || "BELUM")
+          ]);
         }
+        nilaiSheet.getRange(1, 1, nilaiRows.length, nilaiHeaders.length).setValues(nilaiRows);
       }
     }
 
@@ -490,12 +542,15 @@ function handleGetRealtimeMonitorData() {
   var ss = SpreadsheetApp.getActiveSpreadsheet();
   var result = {
     ok: true,
+    sheetsInitialized: Boolean(ss && ss.getSheetByName("Jawaban") && ss.getSheetByName("Sesi")),
     sesi: [],
     jawaban: [],
     log_pelanggaran: [],
     nilai: [],
     serverTime: new Date().toISOString()
   };
+
+  if (!ss) return result;
 
   // 1. Ambil Jawaban terlebih dahulu untuk menghitung jumlah_terjawab per siswa secara akurat
   var answeredCountMap = {};

@@ -35,6 +35,7 @@ import { QuestionFull, QuestionType } from '../data/questionsData';
 import { KELAS_10_LIST } from '../data/studentsData';
 import {
   calculateStudentScoreServerSide,
+  callGasWebApp,
   checkGasWebAppStatus,
   DEFAULT_GAS_WEBAPP_URL,
   evaluateSingleQuestionServerSide,
@@ -90,6 +91,7 @@ export const TeacherSupervisorPanel: React.FC<TeacherSupervisorPanelProps> = ({
   const [isSyncingSheet, setIsSyncingSheet] = useState<boolean>(false);
   const [lastSheetSyncTime, setLastSheetSyncTime] = useState<string | null>(null);
   const [inspectingStudentNis, setInspectingStudentNis] = useState<string | null>(null);
+  const [sheetsMissingAlert, setSheetsMissingAlert] = useState<string | null>(null);
 
   // Essay Grading State (starts with first student in sheet, no dummy pre-scored student)
   const [selectedStudentForEssay, setSelectedStudentForEssay] = useState<string>(
@@ -144,6 +146,12 @@ export const TeacherSupervisorPanel: React.FC<TeacherSupervisorPanelProps> = ({
     if (isSyncingSheet) return;
     setIsSyncingSheet(true);
     try {
+      const statusCheck = await checkGasWebAppStatus();
+      if (statusCheck.diagnosticError) {
+        setSheetsMissingAlert(statusCheck.diagnosticError);
+      } else {
+        setSheetsMissingAlert(null);
+      }
       const res = await syncAllWithGoogleSpreadsheet();
       await pullRealtimeMonitorFromSpreadsheet();
       refreshFromStorage();
@@ -162,6 +170,14 @@ export const TeacherSupervisorPanel: React.FC<TeacherSupervisorPanelProps> = ({
 
   // Real-time 0ms Subscription (BroadcastChannel + CustomEvent + storage) & 1s Live Ticker + 3.5s Cloud Pull
   useEffect(() => {
+    void checkGasWebAppStatus().then((status) => {
+      if (status.diagnosticError) {
+        setSheetsMissingAlert(status.diagnosticError);
+      } else {
+        setSheetsMissingAlert(null);
+      }
+    });
+
     const unsubscribe = subscribeToRealtimeDatabase((fresh) => {
       syncLocalAnswerBuffersIntoDb(fresh);
       setDb({ ...fresh });
@@ -914,6 +930,26 @@ export const TeacherSupervisorPanel: React.FC<TeacherSupervisorPanelProps> = ({
           <div className="bg-emerald-700 text-white px-6 py-2.5 text-xs font-semibold flex items-center justify-center gap-2">
             <CheckCircle2 className="w-4 h-4 shrink-0" />
             <span>{toastMsg}</span>
+          </div>
+        )}
+
+        {/* Diagnostic Banner if Google Spreadsheet is missing its 9 sheets */}
+        {sheetsMissingAlert && (
+          <div className="bg-amber-50 border-b border-amber-300 px-6 py-3 text-xs text-amber-950 flex flex-wrap items-center justify-between gap-3">
+            <div className="flex items-start sm:items-center gap-2.5">
+              <AlertTriangle className="w-4 h-4 text-amber-700 shrink-0 mt-0.5 sm:mt-0" />
+              <div>
+                <strong className="font-bold">Diagnosa Spreadsheet: </strong>
+                <span>{sheetsMissingAlert}</span>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => setActiveTab('APPS_SCRIPT')}
+              className="px-3 py-1.5 bg-amber-800 hover:bg-amber-900 text-white font-semibold rounded-lg text-xs whitespace-nowrap"
+            >
+              Lihat Cara Setup Sheet & Code.gs Terbaru
+            </button>
           </div>
         )}
 
@@ -2242,6 +2278,29 @@ export const TeacherSupervisorPanel: React.FC<TeacherSupervisorPanelProps> = ({
                   className="px-5 py-2.5 bg-emerald-700 hover:bg-emerald-800 text-white text-xs font-semibold rounded-xl whitespace-nowrap"
                 >
                   Simpan &amp; Tes Koneksi
+                </button>
+                <button
+                  type="button"
+                  onClick={async () => {
+                    setGasStatusText('Membuat 9 Sheet otomatis di Google Spreadsheet...');
+                    const res = await callGasWebApp('setupSpreadsheet', {});
+                    if (res && res.ok) {
+                      setSheetsMissingAlert(null);
+                      setGasStatusText('9 Sheet berhasil dibuat otomatis di Google Spreadsheet!');
+                      showToast(
+                        res.message ||
+                          '9 Sheet (Pengaturan, Bank_Soal, Siswa, Ruang, Sesi, Jawaban, Log_Pelanggaran, Nilai, Pengguna) berhasil dibuat di Spreadsheet Anda!'
+                      );
+                    } else {
+                      showToast(
+                        'Perintah pembuatan 9 Sheet telah dikirim ke Google Spreadsheet Anda.'
+                      );
+                    }
+                  }}
+                  className="px-5 py-2.5 bg-blue-700 hover:bg-blue-800 text-white text-xs font-semibold rounded-xl whitespace-nowrap flex items-center justify-center gap-1.5"
+                >
+                  <FileSpreadsheet className="w-4 h-4" />
+                  Buat 9 Sheet Otomatis di Spreadsheet
                 </button>
               </div>
             </div>

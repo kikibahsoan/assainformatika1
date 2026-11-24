@@ -170,24 +170,42 @@ export async function callGasWebApp(
 
 export async function checkGasWebAppStatus(): Promise<{
   connected: boolean;
+  sheetsReady?: boolean;
+  diagnosticError?: string;
   service?: string;
   serverTime?: string;
 }> {
   const db = loadDatabase();
   const url = (db.pengaturan.gas_webapp_url || DEFAULT_GAS_WEBAPP_URL).trim();
-  if (!url) return { connected: false };
+  if (!url) return { connected: false, sheetsReady: false };
 
   try {
     const res = await fetch(url, { method: 'GET' });
-    if (!res.ok) return { connected: false };
+    if (!res.ok) return { connected: false, sheetsReady: false };
     const json = await res.json();
+
+    // Probe if the 9 sheets (Bank_Soal, Sesi, Jawaban) actually exist in the Spreadsheet
+    const probe = await callGasWebApp('getQuestionsForStudent', { nis: 'PROBE' });
+    const isMissingSheets = Boolean(
+      probe && probe.ok === false && String(probe.error || '').includes('null')
+    );
+
+    if (isMissingSheets) {
+      // Attempt automatic remote setup if newer Code.gs is deployed
+      await callGasWebApp('setupSpreadsheet', {});
+    }
+
     return {
       connected: Boolean(json && json.ok),
+      sheetsReady: !isMissingSheets,
+      diagnosticError: isMissingSheets
+        ? '9 Sheet (Sesi, Jawaban, Nilai, Bank_Soal) belum dibuat di Google Spreadsheet. Jalankan fungsi setupSpreadsheet() di Apps Script!'
+        : undefined,
       service: json?.service,
       serverTime: json?.serverTime,
     };
   } catch {
-    return { connected: false };
+    return { connected: false, sheetsReady: false };
   }
 }
 
