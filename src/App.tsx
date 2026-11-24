@@ -97,21 +97,21 @@ export default function App() {
         return;
       }
 
-      // Match token against any active room (INF26A or INF26B)
+      // Match token against active exam token
       const matchedRoom = freshDb.ruang.find(
         (r) => r.token_ujian.toUpperCase() === cleanToken
       );
 
       if (!matchedRoom) {
         setStudentError(
-          'Token ruang tidak valid. Silakan masukkan Token Ruang yang diberikan oleh Pengawas.'
+          'Token ujian tidak valid. Silakan masukkan Token Ujian yang diberikan oleh Pengawas.'
         );
         setIsLoggingIn(false);
         return;
       }
 
-      // Assign student to the room matching their token
-      student.ruang = matchedRoom.kode_ruang;
+      // Keep student assigned to their actual class
+      student.ruang = student.kelas;
 
       // Notify embedded Google Apps Script Web App
       await callGasWebApp('studentLogin', {
@@ -131,7 +131,7 @@ export default function App() {
         existingSession.device_id !== 'RESET-BY-SUPERVISOR'
       ) {
         setStudentError(
-          'Akun Anda sedang aktif di perangkat lain. Minta Pengawas Ruang menekan tombol Reset Sesi jika perangkat Anda diganti.'
+          'Akun Anda sedang aktif di perangkat lain. Minta Pengawas menekan tombol Reset Sesi jika perangkat Anda diganti.'
         );
         setIsLoggingIn(false);
         return;
@@ -147,7 +147,7 @@ export default function App() {
         ).toISOString();
         freshDb.sesi[student.nis] = {
           nis: student.nis,
-          ruang: matchedRoom.kode_ruang,
+          ruang: student.kelas,
           token_sesi: sessionToken,
           device_id: clientDeviceId,
           waktu_mulai: nowIso,
@@ -160,7 +160,7 @@ export default function App() {
           waktu_aktif_terakhir: nowIso,
         };
       } else {
-        freshDb.sesi[student.nis].ruang = matchedRoom.kode_ruang;
+        freshDb.sesi[student.nis].ruang = student.kelas;
         freshDb.sesi[student.nis].device_id = clientDeviceId;
         freshDb.sesi[student.nis].waktu_aktif_terakhir = nowIso;
       }
@@ -357,7 +357,7 @@ export default function App() {
 
               <div>
                 <label className="block text-xs font-bold text-slate-700 mb-1.5">
-                  Token Ruang Ujian
+                  Token Ujian
                 </label>
                 <div className="relative">
                   <KeyRound className="w-4 h-4 text-emerald-700 absolute left-3.5 top-1/2 -translate-y-1/2" />
@@ -366,7 +366,7 @@ export default function App() {
                     required
                     value={roomTokenInput}
                     onChange={(e) => setRoomTokenInput(e.target.value.toUpperCase())}
-                    placeholder="Masukkan token ruang dari pengawas"
+                    placeholder="Masukkan token ujian dari pengawas"
                     className="w-full pl-10 pr-3 py-3 text-sm font-mono font-extrabold uppercase tracking-wider text-emerald-950 bg-emerald-50/70 border border-emerald-300 rounded-xl focus:bg-white focus:outline-none focus:ring-2 focus:ring-emerald-600 transition-colors"
                   />
                 </div>
@@ -378,7 +378,7 @@ export default function App() {
                 className="w-full py-3.5 px-5 bg-emerald-700 hover:bg-emerald-800 disabled:opacity-60 text-white font-bold text-sm rounded-xl shadow-sm transition-all flex items-center justify-center gap-2 cursor-pointer"
               >
                 <UserCheck className="w-4 h-4" />
-                {isLoggingIn ? 'Memverifikasi...' : 'Masuk Ruang Ujian'}
+                {isLoggingIn ? 'Memverifikasi...' : 'Mulai Ujian'}
               </button>
             </form>
           ) : (

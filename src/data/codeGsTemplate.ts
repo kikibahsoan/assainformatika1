@@ -61,24 +61,16 @@ function setupSpreadsheet() {
       name: "Siswa",
       headers: ["NIS", "nama", "kelas", "ruang", "password_hash"],
       rows: [
-        ["102601", "Ahmad Fauzan Gobel", "X TKJ 1", "R-LAB1", hashPassword("123456")],
-        ["102602", "Siti Nurhaliza Monoarfa", "X TKJ 1", "R-LAB1", hashPassword("123456")],
-        ["102603", "Muh. Rizky Katili", "X TKJ 1", "R-LAB1", hashPassword("123456")],
-        ["102604", "Putri Ayu Hulopi", "X RPL 1", "R-LAB1", hashPassword("123456")],
-        ["102605", "Fadel Muhammad Badu", "X RPL 1", "R-LAB1", hashPassword("123456")],
-        ["102606", "Nabila Azzahra Polontalo", "X RPL 1", "R-LAB1", hashPassword("123456")],
-        ["102607", "Reza Pratama Dama", "X DKV 1", "R-LAB1", hashPassword("123456")],
-        ["102608", "Tiara Maharani Uno", "X DKV 1", "R-LAB1", hashPassword("123456")],
-        ["102609", "Ilham Saputra Botutihe", "X DKV 1", "R-LAB2", hashPassword("123456")],
-        ["102610", "Dewi Sartika Pateda", "X TKJ 2", "R-LAB2", hashPassword("123456")]
+        ["10001", "ABDUL HULALANGO", "10-APHP-1", "10-APHP-1", hashPassword("123456")],
+        ["10002", "Abdul Kholig Kalengkongan", "10-APHP-1", "10-APHP-1", hashPassword("123456")],
+        ["10003", "AFRILIA HUSAIN", "10-APHP-1", "10-APHP-1", hashPassword("123456")]
       ]
     },
     {
       name: "Ruang",
       headers: ["kode_ruang", "nama_ruang", "token_ujian", "status_mulai", "jam_mulai"],
       rows: [
-        ["R-LAB1", "Lab Komputer 1 (TKJ & RPL)", "INF26A", "BERJALAN", new Date().toISOString()],
-        ["R-LAB2", "Lab Komputer 2 (DKV & Umum)", "INF26B", "BELUM", ""]
+        ["KELAS-X", "ASSA Informatika Kelas X", "INF26A", "BERJALAN", new Date().toISOString()]
       ]
     },
     {

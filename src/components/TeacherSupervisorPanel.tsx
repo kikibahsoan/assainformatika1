@@ -318,11 +318,12 @@ export const TeacherSupervisorPanel: React.FC<TeacherSupervisorPanelProps> = ({
         const [nisRaw, namaRaw, kelasRaw, ruangRaw, passRaw] = cols.map((c) => c?.trim() || '');
         if (!nisRaw || nisRaw.toLowerCase() === 'nis') return;
         const plainPass = passRaw || '123456';
+        const resolvedKelas = kelasRaw || '10-APHP-1';
         const newRec: SiswaRecord = {
           nis: nisRaw,
           nama: namaRaw || `Siswa ${nisRaw}`,
-          kelas: kelasRaw || 'X TKJ 1',
-          ruang: ruangRaw || 'R-LAB1',
+          kelas: resolvedKelas,
+          ruang: ruangRaw || resolvedKelas,
           password_plain_hint: plainPass,
           password_hash: simpleSha256Simulation(plainPass),
         };
@@ -386,8 +387,7 @@ export const TeacherSupervisorPanel: React.FC<TeacherSupervisorPanelProps> = ({
       const startIso = new Date(now - 35 * 60 * 1000).toISOString();
       const deadlineIso = new Date(now + 55 * 60 * 1000).toISOString();
 
-      const classes = ['X TKJ 1', 'X TKJ 2', 'X RPL 1', 'X RPL 2', 'X DKV 1', 'X DKV 2'];
-      const rooms = ['R-LAB1', 'R-LAB2'];
+      const classes = [...KELAS_10_LIST];
 
       // Clear previous simulated students before generating new count
       fresh.siswa = fresh.siswa.filter((s) => !s.nis.startsWith('SIM'));
@@ -400,14 +400,11 @@ export const TeacherSupervisorPanel: React.FC<TeacherSupervisorPanelProps> = ({
 
       for (let i = 1; i <= simTargetCount; i++) {
         const simNis = `SIM${String(i).padStart(3, '0')}`;
-        const roomCode = rooms[i % rooms.length];
         const classCode = classes[i % classes.length];
         const progress = Math.min(40, Math.floor(8 + ((i * 7) % 33)));
         const violations = i % 19 === 0 ? 3 : i % 7 === 0 ? 1 : 0;
         const status: SesiRecord['status'] =
-          violations >= 3
-            ? 'TERKUNCI'
-            : progress === 40 && i % 4 === 0
+          progress === 40 && i % 4 === 0
             ? 'SELESAI'
             : 'MENGERJAKAN';
 
@@ -415,14 +412,14 @@ export const TeacherSupervisorPanel: React.FC<TeacherSupervisorPanelProps> = ({
           nis: simNis,
           nama: `Siswa Simulasi #${i}`,
           kelas: classCode,
-          ruang: roomCode,
+          ruang: classCode,
           password_plain_hint: '123456',
           password_hash: simpleSha256Simulation('123456'),
         });
 
         fresh.sesi[simNis] = {
           nis: simNis,
-          ruang: roomCode,
+          ruang: classCode,
           token_sesi: `SES-${simNis}`,
           device_id: `DEV-SIM-${i}`,
           waktu_mulai: startIso,
@@ -550,18 +547,6 @@ export const TeacherSupervisorPanel: React.FC<TeacherSupervisorPanelProps> = ({
     );
     const isOffline = sesi.status === 'MENGERJAKAN' && lastActiveSecs > 120;
 
-    if (sesi.status === 'TERKUNCI') {
-      return {
-        label: 'TERKUNCI',
-        badgeClass: 'bg-red-100 text-red-800 border-red-300 font-bold',
-        cardBorder: 'border-red-400 bg-red-50/40',
-        remainingText: `${remMins} mnt`,
-        progress: sesi.jumlah_terjawab || 0,
-        violations: sesi.jumlah_pelanggaran || 0,
-        lastActive: `${lastActiveSecs} dtk lalu`,
-      };
-    }
-
     if (sesi.status === 'SELESAI') {
       return {
         label: 'Selesai',
@@ -586,9 +571,21 @@ export const TeacherSupervisorPanel: React.FC<TeacherSupervisorPanelProps> = ({
       };
     }
 
+    if (sesi.jumlah_pelanggaran >= db.pengaturan.batas_pelanggaran) {
+      return {
+        label: `Pelanggaran (${sesi.jumlah_pelanggaran}x Tercatat)`,
+        badgeClass: 'bg-red-100 text-red-800 border-red-300 font-bold',
+        cardBorder: 'border-red-400 bg-red-50/40',
+        remainingText: `${remMins} mnt`,
+        progress: sesi.jumlah_terjawab || 0,
+        violations: sesi.jumlah_pelanggaran,
+        lastActive: `${lastActiveSecs} dtk lalu`,
+      };
+    }
+
     if (sesi.jumlah_pelanggaran > 0) {
       return {
-        label: `Peringatan (${sesi.jumlah_pelanggaran}/${db.pengaturan.batas_pelanggaran})`,
+        label: `Peringatan (${sesi.jumlah_pelanggaran}x Tercatat)`,
         badgeClass: 'bg-amber-100 text-amber-900 border-amber-300 font-semibold',
         cardBorder: 'border-amber-300 bg-amber-50/30',
         remainingText: `${remMins} mnt`,
@@ -749,73 +746,71 @@ export const TeacherSupervisorPanel: React.FC<TeacherSupervisorPanelProps> = ({
         {/* ===================== TAB 1: PANTAU LANGSUNG & KONTROL PENGAWAS ===================== */}
         {activeTab === 'MONITOR' && (
           <div className="space-y-6">
-            {/* Room Control Cards */}
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              {db.ruang
-                .filter(
-                  (r) =>
-                    staff.peran === 'GURU' ||
-                    staff.ruang_tugas === 'ALL' ||
-                    r.kode_ruang === staff.ruang_tugas
-                )
-                .map((room) => {
-                  const isRunning = room.status_mulai === 'BERJALAN';
-                  return (
-                    <div
-                      key={room.kode_ruang}
-                      className="bg-white border border-slate-200 rounded-xl p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4"
-                    >
-                      <div>
-                        <div className="flex items-center gap-2">
-                          <span className="text-sm font-bold text-slate-900">
-                            {room.nama_ruang} ({room.kode_ruang})
-                          </span>
-                          <span className="text-xs font-semibold text-slate-500">
-                            · Status: {room.status_mulai}
-                          </span>
-                        </div>
-                        <div className="mt-1 text-xs text-slate-600 flex items-center gap-3">
-                          <span>
-                            Token Ruang:{' '}
-                            <strong className="font-mono text-blue-700 text-sm">
-                              {room.token_ujian}
-                            </strong>
-                          </span>
-                          <span>·</span>
-                          <span>
-                            PIN Buka Kunci:{' '}
-                            <strong className="font-mono text-slate-900">
-                              {db.pengaturan.pin_pengawas}
-                            </strong>
-                          </span>
-                        </div>
-                      </div>
-
-                      <div className="flex items-center gap-2 shrink-0">
-                        {!isRunning ? (
-                          <button
-                            type="button"
-                            onClick={() => handleToggleRoomStatus(room.kode_ruang, 'BERJALAN')}
-                            className="px-3.5 py-2 bg-emerald-700 hover:bg-emerald-800 text-white text-xs font-semibold rounded-lg flex items-center gap-1.5 whitespace-nowrap"
-                          >
-                            <Play className="w-3.5 h-3.5" />
-                            Mulai Ujian Ruang
-                          </button>
-                        ) : (
-                          <button
-                            type="button"
-                            onClick={() => handleToggleRoomStatus(room.kode_ruang, 'BELUM')}
-                            className="px-3.5 py-2 bg-amber-600 hover:bg-amber-700 text-white text-xs font-semibold rounded-lg flex items-center gap-1.5 whitespace-nowrap"
-                          >
-                            <Square className="w-3.5 h-3.5" />
-                            Tunda / Ruang Tunggu
-                          </button>
-                        )}
-                      </div>
+            {/* Unified Exam Control Card (No Ruang Ujian Utama / Ruang Ujian 2) */}
+            {db.ruang.slice(0, 1).map((room) => {
+              const isRunning = room.status_mulai === 'BERJALAN';
+              return (
+                <div
+                  key={room.kode_ruang}
+                  className="bg-white border border-slate-200 rounded-xl p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4"
+                >
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <span className="text-sm font-bold text-slate-900">
+                        Kontrol Sesi Ujian — {db.pengaturan.judul_ujian}
+                      </span>
+                      <span className="text-xs font-semibold text-slate-500">
+                        · Status: {room.status_mulai}
+                      </span>
                     </div>
-                  );
-                })}
-            </div>
+                    <div className="mt-1 text-xs text-slate-600 flex flex-wrap items-center gap-3">
+                      <span>
+                        Token Ujian:{' '}
+                        <strong className="font-mono text-blue-700 text-sm">
+                          {room.token_ujian}
+                        </strong>
+                      </span>
+                      <span>·</span>
+                      <span>
+                        PIN Buka Kunci Pengawas:{' '}
+                        <strong className="font-mono text-slate-900">
+                          {db.pengaturan.pin_pengawas}
+                        </strong>
+                      </span>
+                      <span>·</span>
+                      <span>
+                        Total Peserta Terdaftar:{' '}
+                        <strong className="font-mono text-slate-900">
+                          {db.siswa.filter((s) => !s.nis.startsWith('SIM')).length} Siswa (12 Kelas)
+                        </strong>
+                      </span>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-2 shrink-0">
+                    {!isRunning ? (
+                      <button
+                        type="button"
+                        onClick={() => handleToggleRoomStatus(room.kode_ruang, 'BERJALAN')}
+                        className="px-3.5 py-2 bg-emerald-700 hover:bg-emerald-800 text-white text-xs font-semibold rounded-lg flex items-center gap-1.5 whitespace-nowrap"
+                      >
+                        <Play className="w-3.5 h-3.5" />
+                        Aktifkan Sesi Ujian
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => handleToggleRoomStatus(room.kode_ruang, 'BELUM')}
+                        className="px-3.5 py-2 bg-amber-600 hover:bg-amber-700 text-white text-xs font-semibold rounded-lg flex items-center gap-1.5 whitespace-nowrap"
+                      >
+                        <Square className="w-3.5 h-3.5" />
+                        Tunda Sesi Ujian
+                      </button>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
 
             {/* Filter & Auto-Refresh Bar */}
             <div className="bg-white border border-slate-200 rounded-xl p-4 flex flex-wrap items-center justify-between gap-3">
@@ -830,21 +825,6 @@ export const TeacherSupervisorPanel: React.FC<TeacherSupervisorPanelProps> = ({
                     className="pl-9 pr-3 py-1.5 text-xs border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-600"
                   />
                 </div>
-
-                {staff.peran === 'GURU' && (
-                  <select
-                    value={selectedRoomFilter}
-                    onChange={(e) => setSelectedRoomFilter(e.target.value)}
-                    className="px-3 py-1.5 text-xs font-medium border border-slate-300 rounded-lg bg-white"
-                  >
-                    <option value="ALL">Semua Ruang</option>
-                    {db.ruang.map((r) => (
-                      <option key={r.kode_ruang} value={r.kode_ruang}>
-                        {r.kode_ruang} — {r.nama_ruang}
-                      </option>
-                    ))}
-                  </select>
-                )}
 
                 <select
                   value={selectedClassFilter}
@@ -884,7 +864,7 @@ export const TeacherSupervisorPanel: React.FC<TeacherSupervisorPanelProps> = ({
                     <tr className="bg-slate-100 border-b border-slate-200 text-slate-700">
                       <th className="py-3 px-4 font-bold">NIS</th>
                       <th className="py-3 px-4 font-bold">Nama Siswa</th>
-                      <th className="py-3 px-4 font-bold">Kelas / Ruang</th>
+                      <th className="py-3 px-4 font-bold">Kelas</th>
                       <th className="py-3 px-4 font-bold">Status Sesi</th>
                       <th className="py-3 px-4 font-bold">Progres Soal</th>
                       <th className="py-3 px-4 font-bold">Pelanggaran</th>
@@ -905,8 +885,8 @@ export const TeacherSupervisorPanel: React.FC<TeacherSupervisorPanelProps> = ({
                             {s.nis}
                           </td>
                           <td className="py-3 px-4 font-semibold text-slate-900">{s.nama}</td>
-                          <td className="py-3 px-4 text-slate-600">
-                            {s.kelas} · <span className="font-mono">{s.ruang}</span>
+                          <td className="py-3 px-4 font-semibold text-slate-700">
+                            {s.kelas}
                           </td>
                           <td className="py-3 px-4">
                             <span
@@ -1035,7 +1015,7 @@ export const TeacherSupervisorPanel: React.FC<TeacherSupervisorPanelProps> = ({
                       <th className="py-3 px-4 font-bold">Waktu Kejadian</th>
                       <th className="py-3 px-4 font-bold">NIS</th>
                       <th className="py-3 px-4 font-bold">Nama Siswa</th>
-                      <th className="py-3 px-4 font-bold">Ruang</th>
+                      <th className="py-3 px-4 font-bold">Kelas</th>
                       <th className="py-3 px-4 font-bold">Jenis Pelanggaran</th>
                       <th className="py-3 px-4 font-bold">Keterangan Detail</th>
                     </tr>
@@ -1292,7 +1272,7 @@ export const TeacherSupervisorPanel: React.FC<TeacherSupervisorPanelProps> = ({
                     <tr className="bg-slate-100 border-b border-slate-200 text-slate-700">
                       <th className="py-3 px-3.5 font-bold">NIS</th>
                       <th className="py-3 px-3.5 font-bold">Nama Siswa</th>
-                      <th className="py-3 px-3.5 font-bold">Kelas / Ruang</th>
+                      <th className="py-3 px-3.5 font-bold">Kelas</th>
                       <th className="py-3 px-3.5 font-bold text-right">PG (10)</th>
                       <th className="py-3 px-3.5 font-bold text-right">PGK (20)</th>
                       <th className="py-3 px-3.5 font-bold text-right">Jodoh (15)</th>
@@ -1309,8 +1289,8 @@ export const TeacherSupervisorPanel: React.FC<TeacherSupervisorPanelProps> = ({
                           {n.nis}
                         </td>
                         <td className="py-3 px-3.5 font-semibold text-slate-900">{n.nama}</td>
-                        <td className="py-3 px-3.5 text-slate-600">
-                          {n.kelas} · {n.ruang}
+                        <td className="py-3 px-3.5 font-semibold text-slate-700">
+                          {n.kelas}
                         </td>
                         <td className="py-3 px-3.5 font-mono text-right tabular-nums">
                           {n.skor_pg}
@@ -1643,7 +1623,7 @@ export const TeacherSupervisorPanel: React.FC<TeacherSupervisorPanelProps> = ({
 
               <div className="text-xs text-slate-600 bg-slate-50 p-3 rounded-lg border border-slate-200 font-mono">
                 {importMode === 'SISWA'
-                  ? 'Format Kolom: NIS, Nama Lengkap, Kelas, Kode Ruang, Password (contoh: 102611, Budi Setiawan, X TKJ 1, R-LAB1, 123456)'
+                  ? 'Format Kolom: NIS, Nama Lengkap, Kelas (contoh: 10350, Budi Setiawan, 10-APHP-1)'
                   : 'Format Kolom: No, Tipe (PG/PGK/ISIAN/URAIAN), Teks Pertanyaan, Kunci, Bobot, Opsi_A, Opsi_B, Opsi_C, Opsi_D, Opsi_E'}
               </div>
 
@@ -1653,7 +1633,7 @@ export const TeacherSupervisorPanel: React.FC<TeacherSupervisorPanelProps> = ({
                 onChange={(e) => handleParsePastePreview(e.target.value)}
                 placeholder={
                   importMode === 'SISWA'
-                    ? '102611, Rahmat Hidayat, X TKJ 1, R-LAB1, 123456\n102612, Lestari Putri, X RPL 1, R-LAB1, 123456'
+                    ? '10350, Rahmat Hidayat, 10-APHP-1\n10351, Lestari Putri, 10-DKV-1'
                     : '41, ISIAN, Apakah kepanjangan dari CPU?, central processing unit|cpu, 2'
                 }
                 className="w-full p-3 text-xs font-mono border border-slate-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-600"

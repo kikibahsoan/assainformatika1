@@ -122,8 +122,8 @@ export interface SpreadsheetDatabase {
   pengguna: PenggunaRecord[];
 }
 
-// Bumped storage key to V4 so ONLY data_kelas_10_aplikasi.pdf students and kikybahsoan account exist
-const DB_STORAGE_KEY = 'ASSA_INFORMATIKA_SMKN2_GTO_KELAS10_V4';
+// Bumped storage key to V5 so Ruang Ujian Utama & Ruang Ujian 2 are removed
+const DB_STORAGE_KEY = 'ASSA_INFORMATIKA_SMKN2_GTO_KELAS10_V5';
 
 export function simpleSha256Simulation(raw: string): string {
   const str = `${raw.trim()}::SMKN2_GTO_TKA_2026`;
@@ -275,7 +275,7 @@ function buildInitialDatabase(): SpreadsheetDatabase {
     nis: String(10001 + idx),
     nama: entry.nama,
     kelas: entry.kelas,
-    ruang: 'R-LAB1',
+    ruang: entry.kelas,
     password_hash: defaultPassHash,
   }));
 
@@ -301,16 +301,9 @@ function buildInitialDatabase(): SpreadsheetDatabase {
     siswa,
     ruang: [
       {
-        kode_ruang: 'R-LAB1',
-        nama_ruang: 'Ruang Ujian Utama (Lab Komputer 1)',
+        kode_ruang: 'KELAS-X',
+        nama_ruang: 'ASSA Informatika Kelas X',
         token_ujian: 'INF26A',
-        status_mulai: 'BERJALAN',
-        jam_mulai: startIso,
-      },
-      {
-        kode_ruang: 'R-LAB2',
-        nama_ruang: 'Ruang Ujian 2 (Lab Komputer 2)',
-        token_ujian: 'INF26B',
         status_mulai: 'BERJALAN',
         jam_mulai: startIso,
       },
@@ -430,7 +423,7 @@ export function calculateStudentScoreServerSide(
     nis,
     nama: `Siswa ${nis}`,
     kelas: '10-APHP-1',
-    ruang: 'R-LAB1',
+    ruang: '10-APHP-1',
   };
   const studentAnswers = db.jawaban[nis] || {};
   const session = db.sesi[nis];

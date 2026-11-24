@@ -8,14 +8,11 @@ import {
   CloudCheck,
   CloudUpload,
   Flag,
-  KeyRound,
   LayoutGrid,
-  Lock,
   LogOut,
   Maximize,
   RefreshCw,
   Send,
-  ShieldAlert,
   UserCheck,
   X,
 } from 'lucide-react';
@@ -34,7 +31,6 @@ import {
   SesiRecord,
   SiswaRecord,
 } from '../services/cbtBackendService';
-import { ProctorAvatar3D, ProctorMood } from './ProctorAvatar3D';
 import { QuestionSvgDiagrams } from './QuestionSvgDiagrams';
 
 interface StudentExamViewProps {
@@ -50,13 +46,13 @@ export const StudentExamView: React.FC<StudentExamViewProps> = ({
 }) => {
   const [dbState, setDbState] = useState(() => loadDatabase());
   const currentRoom = useMemo(
-    () => dbState.ruang.find((r) => r.kode_ruang === student.ruang),
+    () => dbState.ruang.find((r) => r.kode_ruang === student.ruang) || dbState.ruang[0],
     [dbState.ruang, student.ruang]
   );
 
-  // Room waiting status ('BELUM' | 'BERJALAN' | 'SELESAI')
+  // Exam waiting status ('BELUM' | 'BERJALAN' | 'SELESAI')
   const [roomStarted, setRoomStarted] = useState<boolean>(
-    () => currentRoom?.status_mulai === 'BERJALAN'
+    () => (currentRoom?.status_mulai ?? 'BERJALAN') === 'BERJALAN'
   );
   const [nextJitterMs, setNextJitterMs] = useState<number>(4500);
 
@@ -96,34 +92,34 @@ export const StudentExamView: React.FC<StudentExamViewProps> = ({
     new Date().toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit', second: '2-digit' })
   );
 
-  // Session & Anti-Cheat State
+  // Session & Anti-Cheat State (never locks student even after 3+ violations)
   const [session, setSession] = useState<SesiRecord>(() => {
     const db = loadDatabase();
-    return (
-      db.sesi[student.nis] || {
-        nis: student.nis,
-        ruang: student.ruang,
-        token_sesi: sessionToken,
-        device_id: 'BROWSER-CLIENT',
-        waktu_mulai: new Date().toISOString(),
-        batas_waktu: new Date(
-          Date.now() + db.pengaturan.durasi_menit * 60 * 1000
-        ).toISOString(),
-        tambahan_menit: 0,
-        status: 'MENGERJAKAN',
-        jumlah_pelanggaran: 0,
-        soal_terakhir: 1,
-        jumlah_terjawab: 0,
-        waktu_aktif_terakhir: new Date().toISOString(),
+    const existing = db.sesi[student.nis];
+    if (existing) {
+      if (existing.status === 'TERKUNCI') {
+        existing.status = 'MENGERJAKAN';
+        saveDatabase(db);
       }
-    );
+      return existing;
+    }
+    return {
+      nis: student.nis,
+      ruang: student.ruang,
+      token_sesi: sessionToken,
+      device_id: 'BROWSER-CLIENT',
+      waktu_mulai: new Date().toISOString(),
+      batas_waktu: new Date(
+        Date.now() + db.pengaturan.durasi_menit * 60 * 1000
+      ).toISOString(),
+      tambahan_menit: 0,
+      status: 'MENGERJAKAN',
+      jumlah_pelanggaran: 0,
+      soal_terakhir: 1,
+      jumlah_terjawab: 0,
+      waktu_aktif_terakhir: new Date().toISOString(),
+    };
   });
-
-  // Proctor 3D message & mood
-  const [proctorMessage, setProctorMessage] = useState<string>(
-    `Halo ${student.nama.split(' ')[0]}! Selamat mengerjakan ASSA Informatika. Kerjakan dengan jujur dan teliti.`
-  );
-  const [proctorMood, setProctorMood] = useState<ProctorMood>('NORMAL');
 
   // Modals & UI states
   const [warningModal, setWarningModal] = useState<{
@@ -131,8 +127,6 @@ export const StudentExamView: React.FC<StudentExamViewProps> = ({
     max: number;
     reason: string;
   } | null>(null);
-  const [pinInput, setPinInput] = useState<string>('');
-  const [pinError, setPinError] = useState<string>('');
   const [showConfirmSubmit, setShowConfirmSubmit] = useState<boolean>(false);
   const [showMobileNavDrawer, setShowMobileNavDrawer] = useState<boolean>(false);
   const [isFullscreen, setIsFullscreen] = useState<boolean>(false);
@@ -151,9 +145,9 @@ export const StudentExamView: React.FC<StudentExamViewProps> = ({
     return Math.max(0, Math.floor((deadlineMs - Date.now()) / 1000));
   });
 
-  const announcedMinutesRef = useRef<Set<number>>(new Set());
   const answersRef = useRef(answers);
   answersRef.current = answers;
+  const lastViolationTsRef = useRef<number>(0);
 
   // 1. Waiting Room Polling with Random Jitter (3-8 seconds)
   useEffect(() => {
@@ -163,8 +157,8 @@ export const StudentExamView: React.FC<StudentExamViewProps> = ({
     const pollRoomStatus = () => {
       const db = loadDatabase();
       setDbState(db);
-      const room = db.ruang.find((r) => r.kode_ruang === student.ruang);
-      if (room && room.status_mulai === 'BERJALAN') {
+      const room = db.ruang.find((r) => r.kode_ruang === student.ruang) || db.ruang[0];
+      if (!room || room.status_mulai === 'BERJALAN') {
         setRoomStarted(true);
         return;
       }
@@ -285,7 +279,7 @@ export const StudentExamView: React.FC<StudentExamViewProps> = ({
     }
   }, [unsyncedSet, flushAnswerBatchToServer]);
 
-  // Trigger Batch Flush every 2 minutes (120,000 ms) + Lightweight Heartbeat every 60 seconds
+  // Trigger Batch Flush every 2 minutes (120,000 ms) + Lightweight Heartbeat
   useEffect(() => {
     if (!roomStarted || session.status === 'SELESAI') return;
 
@@ -294,17 +288,20 @@ export const StudentExamView: React.FC<StudentExamViewProps> = ({
       flushAnswerBatchToServer(false);
     }, 120000);
 
-    // 60-second lightweight status heartbeat & check for supervisor remote unlock / extra time
+    // Local & server status heartbeat
     const heartbeatInterval = window.setInterval(() => {
       const db = loadDatabase();
       const srvSesi = db.sesi[student.nis];
       if (srvSesi) {
+        if (srvSesi.status === 'TERKUNCI') {
+          srvSesi.status = 'MENGERJAKAN';
+        }
         srvSesi.waktu_aktif_terakhir = new Date().toISOString();
         saveDatabase(db);
         setSession({ ...srvSesi });
         setDbState(db);
       }
-    }, 5000); // Fast local sync check for supervisor remote unlock while sending network heartbeat every 60s
+    }, 5000);
 
     return () => {
       clearInterval(batchInterval);
@@ -312,89 +309,79 @@ export const StudentExamView: React.FC<StudentExamViewProps> = ({
     };
   }, [roomStarted, session.status, student.nis, flushAnswerBatchToServer]);
 
-  // 4. Record Violation Function (Anti-Cheat Layer)
+  // 4. Record Violation Function (Anti-Cheat Layer: Never locks student, always reports to Teacher Panel)
   const recordViolation = useCallback(
     (
       jenis: LogPelanggaranRecord['jenis_pelanggaran'],
       keterangan: string
     ) => {
+      const nowMs = Date.now();
+      // Prevent duplicate firing within 1000ms (e.g. visibilitychange + window blur firing together)
+      if (nowMs - lastViolationTsRef.current < 1000) {
+        return;
+      }
+      lastViolationTsRef.current = nowMs;
+
       const db = loadDatabase();
       const srvSesi = db.sesi[student.nis];
-      if (!srvSesi || srvSesi.status === 'SELESAI' || srvSesi.status === 'TERKUNCI') {
+      if (!srvSesi || srvSesi.status === 'SELESAI') {
         return;
       }
 
       const maxViolations = db.pengaturan.batas_pelanggaran || 3;
       const newCount = (srvSesi.jumlah_pelanggaran || 0) + 1;
-      const isNowLocked = newCount >= maxViolations;
 
+      // Never lock the student screen even if newCount >= 3; keep status 'MENGERJAKAN'
       srvSesi.jumlah_pelanggaran = newCount;
+      srvSesi.status = 'MENGERJAKAN';
       srvSesi.waktu_aktif_terakhir = new Date().toISOString();
-      if (isNowLocked) {
-        srvSesi.status = 'TERKUNCI';
-      }
 
       const logItem: LogPelanggaranRecord = {
         id: `V-${Date.now()}`,
         waktu: new Date().toISOString(),
         nis: student.nis,
         nama: student.nama,
-        ruang: student.ruang,
+        ruang: student.kelas,
         jenis_pelanggaran: jenis,
-        keterangan: `${keterangan} (Pelanggaran ${newCount}/${maxViolations})`,
+        keterangan: `${keterangan} (Pelanggaran ke-${newCount} — Terkirim ke Panel Guru)`,
       };
       db.log_pelanggaran.unshift(logItem);
       saveDatabase(db);
 
-      // Send violation log to embedded Google Apps Script Web App
+      // Send violation log immediately to embedded Google Apps Script Web App & Teacher Panel
       callGasWebApp('logViolation', {
         nis: student.nis,
+        nama: student.nama,
+        kelas: student.kelas,
         jenis: jenis,
         keterangan: logItem.keterangan,
+        jumlah_pelanggaran: newCount,
       });
 
       setSession({ ...srvSesi });
       setDbState(db);
 
-      if (isNowLocked) {
-        setProctorMood('LOCKED');
-        setProctorMessage(
-          `Layar ujian Anda TERKUNCI karena telah mencapai batas ${maxViolations} pelanggaran (${keterangan}). Jawaban Anda tetap aman. Silakan panggil Pengawas Ruang.`
-        );
-        setWarningModal(null);
-      } else if (newCount === maxViolations - 1) {
-        setProctorMood('CRITICAL');
-        setProctorMessage(
-          `PERINGATAN TERAKHIR (${newCount}/${maxViolations})! Tetap fokus di layar ujian ya. Satu pelanggaran lagi akan mengunci layar ujian Anda.`
-        );
-        setWarningModal({
-          count: newCount,
-          max: maxViolations,
-          reason: keterangan,
-        });
-      } else {
-        setProctorMood('WARNING');
-        setProctorMessage(
-          `Tetap fokus di layar ujian ya! Terdeteksi: ${keterangan} (Peringatan ${newCount}/${maxViolations}).`
-        );
-        setWarningModal({
-          count: newCount,
-          max: maxViolations,
-          reason: keterangan,
-        });
-      }
+      setWarningModal({
+        count: newCount,
+        max: maxViolations,
+        reason: keterangan,
+      });
     },
-    [student.nis, student.nama, student.ruang]
+    [student.nis, student.nama, student.kelas]
   );
 
-  // 5. Anti-Cheat Browser Listeners (visibilitychange, blur, fullscreenchange, shortcuts)
+  // 5. Anti-Cheat Browser Listeners (visibilitychange, blur, fullscreenchange, shortcuts, copy)
   useEffect(() => {
-    if (!roomStarted || session.status !== 'MENGERJAKAN') return;
+    if (!roomStarted || session.status === 'SELESAI') return;
 
     const handleVisibilityChange = () => {
       if (document.hidden) {
         recordViolation('PINDAH_TAB', 'Siswa berpindah tab browser atau meminimalkan aplikasi');
       }
+    };
+
+    const handleWindowBlur = () => {
+      recordViolation('BLUR_JENDELA', 'Jendela ujian kehilangan fokus atau membuka aplikasi lain');
     };
 
     const handleFullscreenChange = () => {
@@ -406,11 +393,11 @@ export const StudentExamView: React.FC<StudentExamViewProps> = ({
     };
 
     const handleKeyDown = (e: KeyboardEvent) => {
-      // Block F12, Ctrl+U, Ctrl+Shift+I, Ctrl+P
+      // Block F12, Ctrl+U, Ctrl+Shift+I/J/C, Ctrl+P
       if (
         e.key === 'F12' ||
         (e.ctrlKey && ['u', 'U', 'p', 'P'].includes(e.key)) ||
-        (e.ctrlKey && e.shiftKey && ['i', 'I', 'j', 'J'].includes(e.key))
+        (e.ctrlKey && e.shiftKey && ['i', 'I', 'j', 'J', 'c', 'C'].includes(e.key))
       ) {
         e.preventDefault();
         recordViolation(
@@ -420,14 +407,27 @@ export const StudentExamView: React.FC<StudentExamViewProps> = ({
       }
     };
 
+    const handleCopyAttempt = (e: ClipboardEvent) => {
+      const target = e.target as HTMLElement | null;
+      if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA')) {
+        return;
+      }
+      e.preventDefault();
+      recordViolation('KLIK_KANAN_COPY', 'Mencoba menyalin teks soal ujian');
+    };
+
     document.addEventListener('visibilitychange', handleVisibilityChange);
+    window.addEventListener('blur', handleWindowBlur);
     document.addEventListener('fullscreenchange', handleFullscreenChange);
     window.addEventListener('keydown', handleKeyDown);
+    document.addEventListener('copy', handleCopyAttempt);
 
     return () => {
       document.removeEventListener('visibilitychange', handleVisibilityChange);
+      window.removeEventListener('blur', handleWindowBlur);
       document.removeEventListener('fullscreenchange', handleFullscreenChange);
       window.removeEventListener('keydown', handleKeyDown);
+      document.removeEventListener('copy', handleCopyAttempt);
     };
   }, [roomStarted, session.status, recordViolation]);
 
@@ -454,13 +454,9 @@ export const StudentExamView: React.FC<StudentExamViewProps> = ({
     setSession((prev) => ({ ...prev, status: 'SELESAI' }));
     setSubmittedResult(nilaiRec);
     setShowConfirmSubmit(false);
-    setProctorMood('SUCCESS');
-    setProctorMessage(
-      'Alhamdulillah, ujian ASSA Informatika selesai! Seluruh jawaban Anda telah diterima dan disimpan di server.'
-    );
   }, [flushAnswerBatchToServer, student.nis]);
 
-  // 7. Server-Side Countdown Timer & Proctor Time Reminders (30, 10, 5, 1 min)
+  // 7. Server-Side Countdown Timer
   useEffect(() => {
     if (!roomStarted || session.status === 'SELESAI') return;
 
@@ -469,19 +465,6 @@ export const StudentExamView: React.FC<StudentExamViewProps> = ({
         new Date(session.batas_waktu).getTime() + session.tambahan_menit * 60 * 1000;
       const secs = Math.max(0, Math.floor((deadlineMs - Date.now()) / 1000));
       setRemainingSeconds(secs);
-
-      const minsLeft = Math.ceil(secs / 60);
-      if (
-        [30, 10, 5, 1].includes(minsLeft) &&
-        !announcedMinutesRef.current.has(minsLeft) &&
-        secs > 0
-      ) {
-        announcedMinutesRef.current.add(minsLeft);
-        setProctorMood(minsLeft <= 5 ? 'WARNING' : 'NORMAL');
-        setProctorMessage(
-          `Pengingat waktu: Sisa waktu pengerjaan ujian Anda tinggal ${minsLeft} menit lagi. Periksa kembali jawaban yang masih ragu-ragu.`
-        );
-      }
 
       if (secs <= 0) {
         clearInterval(timer);
@@ -532,33 +515,6 @@ export const StudentExamView: React.FC<StudentExamViewProps> = ({
         db.sesi[student.nis].waktu_aktif_terakhir = new Date().toISOString();
         saveDatabase(db);
       }
-    }
-  };
-
-  // Unlock with Supervisor PIN on student device
-  const handleUnlockWithPin = (e: React.FormEvent) => {
-    e.preventDefault();
-    const db = loadDatabase();
-    if (pinInput.trim() === db.pengaturan.pin_pengawas.trim()) {
-      if (db.sesi[student.nis]) {
-        db.sesi[student.nis].status = 'MENGERJAKAN';
-        // Give 1 grace allowance so it doesn't immediately lock without a new violation
-        db.sesi[student.nis].jumlah_pelanggaran = Math.max(
-          0,
-          db.pengaturan.batas_pelanggaran - 1
-        );
-        db.sesi[student.nis].waktu_aktif_terakhir = new Date().toISOString();
-        saveDatabase(db);
-        setSession({ ...db.sesi[student.nis] });
-      }
-      setPinInput('');
-      setPinError('');
-      setProctorMood('NORMAL');
-      setProctorMessage(
-        'Kunci layar telah dibuka oleh Pengawas. Silakan lanjutkan mengerjakan dengan tertib.'
-      );
-    } else {
-      setPinError('PIN Pengawas tidak sesuai. Silakan hubungi Pengawas Ruang.');
     }
   };
 
@@ -688,15 +644,6 @@ export const StudentExamView: React.FC<StudentExamViewProps> = ({
             </div>
           )}
 
-          <div className="mb-6">
-            <ProctorAvatar3D
-              message="Terima kasih telah mengikuti ujian ASSA Informatika dengan tertib. Silakan keluar dari akun dan tinggalkan ruang ujian sesuai arahan pengawas."
-              mood="SUCCESS"
-              violationCount={session.jumlah_pelanggaran}
-              maxViolations={dbState.pengaturan.batas_pelanggaran}
-            />
-          </div>
-
           <button
             type="button"
             onClick={onLogout}
@@ -745,9 +692,9 @@ export const StudentExamView: React.FC<StudentExamViewProps> = ({
               </span>
             </div>
             <div>
-              <span className="text-slate-500 block">Ruang Ujian</span>
+              <span className="text-slate-500 block">Kelas</span>
               <span className="font-semibold text-slate-900">
-                {currentRoom?.nama_ruang || student.ruang}
+                {student.kelas}
               </span>
             </div>
             <div>
@@ -761,15 +708,15 @@ export const StudentExamView: React.FC<StudentExamViewProps> = ({
           <div className="p-4 bg-amber-50 border border-amber-200 rounded-xl mb-6">
             <div className="flex items-center gap-2.5 text-amber-900 font-semibold text-sm mb-1">
               <RefreshCw className="w-4 h-4 animate-spin text-amber-700 shrink-0" />
-              Menunggu Pengawas Memulai Ujian di Ruang {student.ruang}...
+              Menunggu Pengawas Memulai Sesi Ujian ({student.kelas})...
             </div>
             <p className="text-xs text-amber-800 leading-relaxed">
-              Aplikasi memeriksa status mulai ruang secara otomatis dengan jeda acak{' '}
+              Aplikasi memeriksa status mulai ujian secara otomatis dengan jeda acak{' '}
               <span className="font-mono font-semibold tabular-nums">
                 {(nextJitterMs / 1000).toFixed(1)} detik
               </span>{' '}
               (desain anti-lonjakan untuk 300 siswa serentak). Halaman akan otomatis membuka soal
-              begitu pengawas mengaktifkan ruang.
+              begitu pengawas mengaktifkan sesi ujian.
             </p>
           </div>
 
@@ -780,9 +727,8 @@ export const StudentExamView: React.FC<StudentExamViewProps> = ({
               2. Dilarang berpindah tab browser, membuka aplikasi lain, atau menyalin teks soal.
             </p>
             <p>
-              3. Layar ujian akan terkunci otomatis apabila tercatat{' '}
-              <strong>{dbState.pengaturan.batas_pelanggaran} kali pelanggaran</strong> dan hanya
-              bisa dibuka dengan PIN Pengawas.
+              3. Setiap tindakan kecurangan atau pelanggaran akan langsung tercatat dan{' '}
+              <strong>dikirimkan otomatis ke Panel Guru &amp; Pengawas</strong>.
             </p>
           </div>
 
@@ -790,7 +736,7 @@ export const StudentExamView: React.FC<StudentExamViewProps> = ({
             type="button"
             onClick={() => {
               const db = loadDatabase();
-              const r = db.ruang.find((rm) => rm.kode_ruang === student.ruang);
+              const r = db.ruang.find((rm) => rm.kode_ruang === student.ruang) || db.ruang[0];
               if (r) {
                 r.status_mulai = 'BERJALAN';
                 r.jam_mulai = new Date().toISOString();
@@ -801,86 +747,14 @@ export const StudentExamView: React.FC<StudentExamViewProps> = ({
             }}
             className="w-full py-3 px-4 bg-blue-700 hover:bg-blue-800 text-white font-semibold text-sm rounded-xl transition-colors"
           >
-            Mulai Sekarang (Simulasi Pengawas Mengaktifkan Ruang)
+            Mulai Sekarang (Aktifkan Sesi Ujian)
           </button>
         </div>
       </div>
     );
   }
 
-  // ===================== VIEW 3: LOCKED SCREEN (PELANGGARAN >= BATAS) =====================
-  if (session.status === 'TERKUNCI') {
-    return (
-      <div className="min-h-screen bg-red-950/95 text-slate-900 flex flex-col justify-center items-center p-4">
-        <div className="w-full max-w-lg bg-white border-2 border-red-500 rounded-2xl p-6 md:p-8 shadow-xl">
-          <div className="flex items-center gap-3 mb-4">
-            <div className="w-12 h-12 rounded-xl bg-red-100 text-red-700 flex items-center justify-center shrink-0">
-              <Lock className="w-6 h-6" />
-            </div>
-            <div>
-              <span className="text-xs font-bold text-red-700">
-                Sistem Anti-Curang SMKN 2 Gorontalo
-              </span>
-              <h1 className="text-xl font-bold text-slate-900">
-                Layar Ujian Anda Terkunci
-              </h1>
-            </div>
-          </div>
-
-          <div className="p-3.5 bg-red-50 border border-red-200 rounded-xl text-xs text-red-900 leading-relaxed mb-5">
-            Terdeteksi <strong>{session.jumlah_pelanggaran} kali pelanggaran</strong> (keluar
-            fullscreen / pindah tab / jendela tidak aktif). Jangan khawatir,{' '}
-            <strong>seluruh jawaban yang sudah Anda isi tetap tersimpan dengan aman</strong>.
-          </div>
-
-          <div className="mb-5">
-            <ProctorAvatar3D
-              message="Layar ujian terkunci otomatis. Silakan angkat tangan dan minta Pengawas Ruang untuk membuka kunci dari Panel Pengawas atau memasukkan PIN Pengawas di bawah ini."
-              mood="LOCKED"
-              violationCount={session.jumlah_pelanggaran}
-              maxViolations={dbState.pengaturan.batas_pelanggaran}
-            />
-          </div>
-
-          <form onSubmit={handleUnlockWithPin} className="space-y-3">
-            <div>
-              <label className="block text-xs font-bold text-slate-700 mb-1">
-                Buka Kunci dengan PIN Pengawas Ruang (Demo PIN: {dbState.pengaturan.pin_pengawas})
-              </label>
-              <div className="flex gap-2">
-                <div className="relative flex-1">
-                  <KeyRound className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
-                  <input
-                    type="password"
-                    value={pinInput}
-                    onChange={(e) => setPinInput(e.target.value)}
-                    placeholder="Masukkan PIN Pengawas..."
-                    className="w-full pl-10 pr-4 py-2.5 text-sm font-mono border border-slate-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-600"
-                  />
-                </div>
-                <button
-                  type="submit"
-                  className="px-5 py-2.5 bg-blue-700 hover:bg-blue-800 text-white text-sm font-semibold rounded-xl transition-colors whitespace-nowrap shrink-0"
-                >
-                  Buka Kunci
-                </button>
-              </div>
-              {pinError && <p className="text-xs text-red-600 mt-1.5 font-medium">{pinError}</p>}
-            </div>
-          </form>
-
-          <div className="mt-5 pt-4 border-t border-slate-200 flex items-center justify-between text-xs text-slate-500">
-            <span>
-              Peserta: <strong>{student.nama}</strong> ({student.nis})
-            </span>
-            <span>Ruang: {student.ruang}</span>
-          </div>
-        </div>
-      </div>
-    );
-  }
-
-  // ===================== VIEW 4: MAIN EXAM WORKSPACE =====================
+  // ===================== VIEW 3: MAIN EXAM WORKSPACE =====================
   const currentQuestion = questions[currentIdx];
   if (!currentQuestion) {
     return (
@@ -975,11 +849,7 @@ export const StudentExamView: React.FC<StudentExamViewProps> = ({
                 <span className="mx-1.5" aria-hidden="true">
                   ·
                 </span>
-                <span>{student.kelas}</span>
-                <span className="mx-1.5" aria-hidden="true">
-                  ·
-                </span>
-                <span>Ruang {student.ruang}</span>
+                <span>Kelas {student.kelas}</span>
               </div>
             </div>
           </div>
@@ -1022,21 +892,6 @@ export const StudentExamView: React.FC<StudentExamViewProps> = ({
                 Layar Penuh
               </button>
             )}
-
-            <button
-              type="button"
-              onClick={() =>
-                recordViolation(
-                  'PINDAH_TAB',
-                  'Simulasi uji pindah tab / keluar aplikasi oleh penguji'
-                )
-              }
-              className="flex items-center gap-1 text-xs font-medium text-amber-800 bg-amber-50 hover:bg-amber-100 border border-amber-200 px-2.5 py-1.5 rounded-lg transition-colors whitespace-nowrap shrink-0"
-              title="Gunakan tombol ini untuk menguji reaksi Avatar Proktor 3D dan penguncian layar tanpa keluar dari tab"
-            >
-              <ShieldAlert className="w-3.5 h-3.5" />
-              Uji Pelanggaran ({session.jumlah_pelanggaran}/{dbState.pengaturan.batas_pelanggaran})
-            </button>
           </div>
 
           {/* Zone 3: Server Countdown Timer & Mobile Nav Toggle */}
@@ -1066,7 +921,7 @@ export const StudentExamView: React.FC<StudentExamViewProps> = ({
         </div>
       </header>
 
-      {/* Progressive Anti-Cheat Warning Banner (Violation 1 & 2) */}
+      {/* Anti-Cheat Violation Warning Banner (Never locks screen, reports to Teacher Panel) */}
       {warningModal && (
         <div className="bg-amber-100 border-b border-amber-300 px-4 py-2.5">
           <div className="max-w-[1400px] mx-auto flex items-center justify-between gap-3">
@@ -1074,10 +929,10 @@ export const StudentExamView: React.FC<StudentExamViewProps> = ({
               <AlertTriangle className="w-4 h-4 text-amber-700 shrink-0" />
               <span>
                 <strong>
-                  Peringatan Pelanggaran {warningModal.count} dari {warningModal.max}:
+                  Peringatan Pelanggaran ke-{warningModal.count}:
                 </strong>{' '}
-                {warningModal.reason}. Pada pelanggaran ke-{warningModal.max}, layar ujian akan
-                terkunci otomatis!
+                {warningModal.reason}. Aktivitas ini telah tercatat dan dikirim langsung ke Panel
+                Guru &amp; Pengawas.
               </span>
             </div>
             <button
@@ -1423,16 +1278,8 @@ export const StudentExamView: React.FC<StudentExamViewProps> = ({
           </div>
         </section>
 
-        {/* RIGHT COLUMN: 3D PROCTOR AVATAR & 40-QUESTION NAVIGATION GRID (4 cols on lg) */}
+        {/* RIGHT COLUMN: 40-QUESTION NAVIGATION GRID (4 cols on lg) */}
         <aside className="lg:col-span-4 space-y-5">
-          {/* 3D Proctor Avatar Widget */}
-          <ProctorAvatar3D
-            message={proctorMessage}
-            mood={proctorMood}
-            violationCount={session.jumlah_pelanggaran}
-            maxViolations={dbState.pengaturan.batas_pelanggaran}
-          />
-
           {/* Question Number Navigation Panel */}
           <div className="bg-white border border-slate-200 rounded-2xl p-5 shadow-sm">
             <div className="flex items-center justify-between mb-3">
