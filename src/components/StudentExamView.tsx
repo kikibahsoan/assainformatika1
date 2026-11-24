@@ -30,6 +30,7 @@ import {
   saveDatabase,
   SesiRecord,
   SiswaRecord,
+  subscribeToRealtimeDatabase,
 } from '../services/cbtBackendService';
 import { QuestionSvgDiagrams } from './QuestionSvgDiagrams';
 
@@ -61,25 +62,54 @@ export const StudentExamView: React.FC<StudentExamViewProps> = ({
   const [currentIdx, setCurrentIdx] = useState<number>(0);
 
   // Local answers buffer: { [no_soal]: { jawaban: string, ragu_ragu: boolean, waktu_simpan: string } }
+  // Merges both database answers and localStorage buffer so if a student gets logged out or reloads, 100% of answers are restored
   const localBufferKey = `ASSA_LOCAL_ANS_${student.nis}`;
   const [answers, setAnswers] = useState<Record<number, { jawaban: string; ragu_ragu: boolean }>>(
     () => {
-      try {
-        const raw = localStorage.getItem(localBufferKey);
-        if (raw) return JSON.parse(raw);
-      } catch {
-        // fallback to server answers
-      }
       const db = loadDatabase();
       const srvAns = db.jawaban[student.nis] || {};
-      const mapped: Record<number, { jawaban: string; ragu_ragu: boolean }> = {};
+      const merged: Record<number, { jawaban: string; ragu_ragu: boolean }> = {};
+
       Object.values(srvAns).forEach((item) => {
-        mapped[item.no_soal] = {
-          jawaban: item.jawaban,
-          ragu_ragu: Boolean(item.ragu_ragu),
-        };
+        if (item && item.no_soal) {
+          merged[item.no_soal] = {
+            jawaban: item.jawaban || '',
+            ragu_ragu: Boolean(item.ragu_ragu),
+          };
+        }
       });
-      return mapped;
+
+      try {
+        const raw = localStorage.getItem(localBufferKey);
+        if (raw) {
+          const localParsed = JSON.parse(raw) as Record<
+            string,
+            { jawaban: string; ragu_ragu: boolean }
+          >;
+          Object.entries(localParsed).forEach(([noStr, val]) => {
+            const no = Number(noStr);
+            if (!Number.isNaN(no) && val) {
+              // Prefer non-empty answer if either source has one
+              const existingAns = merged[no]?.jawaban || '';
+              const localAns = val.jawaban || '';
+              merged[no] = {
+                jawaban: localAns.trim() !== '' ? localAns : existingAns,
+                ragu_ragu: Boolean(val.ragu_ragu ?? merged[no]?.ragu_ragu),
+              };
+            }
+          });
+        }
+      } catch {
+        // ignore corrupted localStorage buffer
+      }
+
+      try {
+        localStorage.setItem(localBufferKey, JSON.stringify(merged));
+      } catch {
+        // ignore
+      }
+
+      return merged;
     }
   );
 
@@ -272,27 +302,40 @@ export const StudentExamView: React.FC<StudentExamViewProps> = ({
     [student.nis, unsyncedSet]
   );
 
-  // Trigger Batch Flush every 5 unsynced questions
+  // Trigger debounced real-time sync to Google Apps Script (1.2s after answer change) or immediately when >= 5 answers queued
   useEffect(() => {
+    if (unsyncedSet.size === 0) return;
     if (unsyncedSet.size >= 5) {
       flushAnswerBatchToServer(false);
+      return;
     }
+    const debounceTimer = window.setTimeout(() => {
+      flushAnswerBatchToServer(false);
+    }, 1200);
+    return () => clearTimeout(debounceTimer);
   }, [unsyncedSet, flushAnswerBatchToServer]);
 
-  // Trigger Batch Flush every 2 minutes (120,000 ms) + Lightweight Heartbeat
+  // Real-time subscription to Teacher Panel actions (extra time, force submit, room status) + 3s heartbeat
   useEffect(() => {
-    if (!roomStarted || session.status === 'SELESAI') return;
+    const unsubscribe = subscribeToRealtimeDatabase((freshDb) => {
+      setDbState(freshDb);
+      const room = freshDb.ruang.find((r) => r.kode_ruang === student.ruang) || freshDb.ruang[0];
+      if (room) {
+        setRoomStarted(room.status_mulai === 'BERJALAN');
+      }
+      const srvSesi = freshDb.sesi[student.nis];
+      if (srvSesi) {
+        setSession({ ...srvSesi });
+        if (srvSesi.status === 'SELESAI' && freshDb.nilai[student.nis]) {
+          setSubmittedResult(freshDb.nilai[student.nis]);
+        }
+      }
+    });
 
-    // 2-minute batch flush timer
-    const batchInterval = window.setInterval(() => {
-      flushAnswerBatchToServer(false);
-    }, 120000);
-
-    // Local & server status heartbeat
     const heartbeatInterval = window.setInterval(() => {
       const db = loadDatabase();
       const srvSesi = db.sesi[student.nis];
-      if (srvSesi) {
+      if (srvSesi && srvSesi.status !== 'SELESAI') {
         if (srvSesi.status === 'TERKUNCI') {
           srvSesi.status = 'MENGERJAKAN';
         }
@@ -301,13 +344,13 @@ export const StudentExamView: React.FC<StudentExamViewProps> = ({
         setSession({ ...srvSesi });
         setDbState(db);
       }
-    }, 5000);
+    }, 3000);
 
     return () => {
-      clearInterval(batchInterval);
+      unsubscribe();
       clearInterval(heartbeatInterval);
     };
-  }, [roomStarted, session.status, student.nis, flushAnswerBatchToServer]);
+  }, [student.nis, student.ruang]);
 
   // 4. Record Violation Function (Anti-Cheat Layer: Never locks student, always reports to Teacher Panel)
   const recordViolation = useCallback(
@@ -475,24 +518,58 @@ export const StudentExamView: React.FC<StudentExamViewProps> = ({
     return () => clearInterval(timer);
   }, [roomStarted, session.batas_waktu, session.tambahan_menit, session.status, handleFinalSubmit]);
 
-  // Save answer to localStorage immediately on every interaction
+  // Save answer immediately to localStorage AND shared realtime database so Teacher Panel updates in 0ms
   const updateAnswer = (noSoal: number, newJawaban: string, toggleRagu?: boolean) => {
-    setAnswers((prev) => {
-      const existing = prev[noSoal] || { jawaban: '', ragu_ragu: false };
-      const updated = {
-        ...prev,
-        [noSoal]: {
-          jawaban: newJawaban,
-          ragu_ragu: toggleRagu !== undefined ? toggleRagu : existing.ragu_ragu,
-        },
-      };
-      try {
-        localStorage.setItem(localBufferKey, JSON.stringify(updated));
-      } catch {
-        // ignore quota errors
-      }
-      return updated;
-    });
+    const existing = answersRef.current[noSoal] || { jawaban: '', ragu_ragu: false };
+    const nextRagu = toggleRagu !== undefined ? toggleRagu : existing.ragu_ragu;
+    const updatedMap = {
+      ...answersRef.current,
+      [noSoal]: {
+        jawaban: newJawaban,
+        ragu_ragu: nextRagu,
+      },
+    };
+    answersRef.current = updatedMap;
+    setAnswers(updatedMap);
+
+    try {
+      localStorage.setItem(localBufferKey, JSON.stringify(updatedMap));
+    } catch {
+      // ignore quota errors
+    }
+
+    // Immediately write to shared database & broadcast real-time update to Teacher Panel
+    const db = loadDatabase();
+    if (!db.jawaban[student.nis]) {
+      db.jawaban[student.nis] = {};
+    }
+    const nowIso = new Date().toISOString();
+    db.jawaban[student.nis][noSoal] = {
+      nis: student.nis,
+      no_soal: noSoal,
+      jawaban: newJawaban,
+      ragu_ragu: nextRagu,
+      waktu_simpan: nowIso,
+    };
+
+    const liveAnsweredCount = Object.values(updatedMap).filter(
+      (a) => a.jawaban && String(a.jawaban).trim() !== ''
+    ).length;
+
+    if (db.sesi[student.nis]) {
+      db.sesi[student.nis].jumlah_terjawab = liveAnsweredCount;
+      db.sesi[student.nis].soal_terakhir = noSoal;
+      db.sesi[student.nis].waktu_aktif_terakhir = nowIso;
+    }
+
+    // Keep live provisional score updated for real-time monitoring in Teacher Panel
+    db.nilai[student.nis] = calculateStudentScoreServerSide(
+      db,
+      student.nis,
+      db.nilai[student.nis]?.skor_uraian_per_soal
+    );
+
+    saveDatabase(db, true);
 
     setUnsyncedSet((prev) => {
       const next = new Set(prev);
@@ -502,7 +579,7 @@ export const StudentExamView: React.FC<StudentExamViewProps> = ({
     setSyncStatus('PENDING_BATCH');
   };
 
-  // Navigate to a question & record farthest/last question visited
+  // Navigate to a question & record farthest/last question visited in real-time
   const goToQuestionIndex = (idx: number) => {
     if (idx < 0 || idx >= questions.length) return;
     setCurrentIdx(idx);
@@ -513,7 +590,7 @@ export const StudentExamView: React.FC<StudentExamViewProps> = ({
       if (db.sesi[student.nis]) {
         db.sesi[student.nis].soal_terakhir = qNo;
         db.sesi[student.nis].waktu_aktif_terakhir = new Date().toISOString();
-        saveDatabase(db);
+        saveDatabase(db, true);
       }
     }
   };

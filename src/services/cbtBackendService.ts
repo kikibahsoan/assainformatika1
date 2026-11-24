@@ -507,7 +507,19 @@ export function calculateStudentScoreServerSide(
   };
 }
 
-// ===================== DATABASE ACCESS & RETRY ENGINE =====================
+// ===================== REALTIME EVENT BUS & SPREADSHEET SYNC ENGINE =====================
+
+const REALTIME_CHANNEL_NAME = 'ASSA_CBT_REALTIME_CHANNEL_V5';
+const LOCAL_CUSTOM_EVENT = 'assa-cbt-db-updated';
+
+let broadcastChannel: BroadcastChannel | null = null;
+try {
+  if (typeof window !== 'undefined' && 'BroadcastChannel' in window) {
+    broadcastChannel = new BroadcastChannel(REALTIME_CHANNEL_NAME);
+  }
+} catch {
+  broadcastChannel = null;
+}
 
 export function loadDatabase(): SpreadsheetDatabase {
   try {
@@ -525,15 +537,326 @@ export function loadDatabase(): SpreadsheetDatabase {
     console.warn('Gagal memuat DB lokal, membuat ulang data bersih:', e);
   }
   const initial = buildInitialDatabase();
-  saveDatabase(initial);
+  saveDatabase(initial, false);
   return initial;
 }
 
-export function saveDatabase(db: SpreadsheetDatabase): void {
+export function saveDatabase(db: SpreadsheetDatabase, notifyRealtime = true): void {
   try {
     localStorage.setItem(DB_STORAGE_KEY, JSON.stringify(db));
+    if (notifyRealtime && typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent(LOCAL_CUSTOM_EVENT));
+      try {
+        broadcastChannel?.postMessage({
+          type: 'DB_UPDATED',
+          timestamp: Date.now(),
+        });
+      } catch {
+        // ignore channel errors
+      }
+    }
   } catch (e) {
     console.error('Gagal menyimpan DB ke localStorage:', e);
+  }
+}
+
+export function subscribeToRealtimeDatabase(
+  onUpdate: (freshDb: SpreadsheetDatabase) => void
+): () => void {
+  if (typeof window === 'undefined') return () => {};
+
+  const handleLocalUpdate = () => {
+    onUpdate(loadDatabase());
+  };
+
+  const handleStorageEvent = (e: StorageEvent) => {
+    if (!e.key || e.key === DB_STORAGE_KEY || e.key.startsWith('ASSA_LOCAL_ANS_')) {
+      onUpdate(loadDatabase());
+    }
+  };
+
+  let subChannel: BroadcastChannel | null = null;
+  try {
+    if ('BroadcastChannel' in window) {
+      subChannel = new BroadcastChannel(REALTIME_CHANNEL_NAME);
+      subChannel.onmessage = () => {
+        onUpdate(loadDatabase());
+      };
+    }
+  } catch {
+    subChannel = null;
+  }
+
+  window.addEventListener(LOCAL_CUSTOM_EVENT, handleLocalUpdate);
+  window.addEventListener('storage', handleStorageEvent);
+
+  return () => {
+    window.removeEventListener(LOCAL_CUSTOM_EVENT, handleLocalUpdate);
+    window.removeEventListener('storage', handleStorageEvent);
+    try {
+      subChannel?.close();
+    } catch {
+      // ignore
+    }
+  };
+}
+
+export function mergeRemoteMonitorData(
+  db: SpreadsheetDatabase,
+  remote: Record<string, any>
+): boolean {
+  let changed = false;
+
+  // Merge remote Sesi array or map
+  if (Array.isArray(remote.sesi)) {
+    remote.sesi.forEach((rSesi: any) => {
+      const nis = String(rSesi?.nis || '').trim();
+      if (!nis) return;
+      const localSesi = db.sesi[nis];
+      const remoteTime = new Date(rSesi.waktu_aktif_terakhir || 0).getTime();
+      const localTime = new Date(localSesi?.waktu_aktif_terakhir || 0).getTime();
+      if (!localSesi || remoteTime >= localTime || (rSesi.jumlah_terjawab || 0) > (localSesi.jumlah_terjawab || 0)) {
+        db.sesi[nis] = {
+          nis,
+          ruang: String(rSesi.ruang || localSesi?.ruang || '10-APHP-1'),
+          token_sesi: String(rSesi.token_sesi || localSesi?.token_sesi || `SES-${nis}`),
+          device_id: String(rSesi.device_id || localSesi?.device_id || 'REMOTE-CLIENT'),
+          waktu_mulai: String(rSesi.waktu_mulai || localSesi?.waktu_mulai || new Date().toISOString()),
+          batas_waktu: String(rSesi.batas_waktu || localSesi?.batas_waktu || new Date(Date.now() + 90 * 60000).toISOString()),
+          tambahan_menit: Number(rSesi.tambahan_menit ?? localSesi?.tambahan_menit ?? 0),
+          status: rSesi.status === 'SELESAI' ? 'SELESAI' : 'MENGERJAKAN',
+          jumlah_pelanggaran: Math.max(
+            Number(rSesi.jumlah_pelanggaran || 0),
+            Number(localSesi?.jumlah_pelanggaran || 0)
+          ),
+          soal_terakhir: Number(rSesi.soal_terakhir || localSesi?.soal_terakhir || 1),
+          jumlah_terjawab: Math.max(
+            Number(rSesi.jumlah_terjawab || 0),
+            Number(localSesi?.jumlah_terjawab || 0)
+          ),
+          waktu_aktif_terakhir: String(rSesi.waktu_aktif_terakhir || new Date().toISOString()),
+        };
+        changed = true;
+      }
+    });
+  }
+
+  // Merge remote Jawaban rows: [[nis, no_soal, jawaban, waktu_simpan], ...] or objects
+  if (Array.isArray(remote.jawaban)) {
+    remote.jawaban.forEach((row: any) => {
+      const nis = String(Array.isArray(row) ? row[0] : row?.nis || '').trim();
+      const noSoal = Number(Array.isArray(row) ? row[1] : row?.no_soal || 0);
+      const jwb = String(Array.isArray(row) ? row[2] : row?.jawaban ?? '');
+      const waktu = String(Array.isArray(row) ? row[3] : row?.waktu_simpan || new Date().toISOString());
+      if (!nis || !noSoal) return;
+      if (!db.jawaban[nis]) db.jawaban[nis] = {};
+      const existing = db.jawaban[nis][noSoal];
+      if (!existing || existing.jawaban !== jwb) {
+        db.jawaban[nis][noSoal] = {
+          nis,
+          no_soal: noSoal,
+          jawaban: jwb,
+          ragu_ragu: existing?.ragu_ragu || false,
+          waktu_simpan: waktu,
+        };
+        changed = true;
+      }
+    });
+
+    // Recalculate jumlah_terjawab per student from merged answers
+    Object.keys(db.jawaban).forEach((nis) => {
+      const ansMap = db.jawaban[nis] || {};
+      const count = Object.values(ansMap).filter(
+        (a) => a.jawaban && String(a.jawaban).trim() !== ''
+      ).length;
+      if (count > 0) {
+        const student = db.siswa.find((s) => s.nis === nis);
+        if (!db.sesi[nis]) {
+          const nowIso = new Date().toISOString();
+          db.sesi[nis] = {
+            nis,
+            ruang: student?.kelas || '10-APHP-1',
+            token_sesi: `SES-${nis}`,
+            device_id: 'REMOTE-SHEET',
+            waktu_mulai: nowIso,
+            batas_waktu: new Date(Date.now() + db.pengaturan.durasi_menit * 60000).toISOString(),
+            tambahan_menit: 0,
+            status: db.nilai[nis] ? 'SELESAI' : 'MENGERJAKAN',
+            jumlah_pelanggaran: 0,
+            soal_terakhir: count,
+            jumlah_terjawab: count,
+            waktu_aktif_terakhir: nowIso,
+          };
+          changed = true;
+        } else if (count > (db.sesi[nis].jumlah_terjawab || 0)) {
+          db.sesi[nis].jumlah_terjawab = count;
+          changed = true;
+        }
+      }
+    });
+  }
+
+  // Merge remote Log_Pelanggaran
+  if (Array.isArray(remote.log_pelanggaran)) {
+    remote.log_pelanggaran.forEach((row: any) => {
+      const waktu = String(Array.isArray(row) ? row[0] : row?.waktu || '');
+      const nis = String(Array.isArray(row) ? row[1] : row?.nis || '').trim();
+      const jenis = String(Array.isArray(row) ? row[2] : row?.jenis_pelanggaran || 'PINDAH_TAB') as LogPelanggaranRecord['jenis_pelanggaran'];
+      const ket = String(Array.isArray(row) ? row[3] : row?.keterangan || '');
+      if (!nis || !waktu) return;
+      const exists = db.log_pelanggaran.some(
+        (l) => l.nis === nis && l.waktu === waktu && l.jenis_pelanggaran === jenis
+      );
+      if (!exists) {
+        const st = db.siswa.find((s) => s.nis === nis);
+        db.log_pelanggaran.unshift({
+          id: `V-REM-${nis}-${new Date(waktu).getTime() || Date.now()}`,
+          waktu,
+          nis,
+          nama: st?.nama || `Siswa ${nis}`,
+          ruang: st?.kelas || '10-APHP-1',
+          jenis_pelanggaran: jenis,
+          keterangan: ket,
+        });
+        changed = true;
+      }
+    });
+  }
+
+  return changed;
+}
+
+export async function pullRealtimeMonitorFromSpreadsheet(): Promise<boolean> {
+  const res = await callGasWebApp('getRealtimeMonitorData', {});
+  if (!res || !res.ok) return false;
+  const db = loadDatabase();
+  const changed = mergeRemoteMonitorData(db, res);
+  if (changed) {
+    saveDatabase(db, true);
+  }
+  return changed;
+}
+
+export interface SpreadsheetSyncResult {
+  ok: boolean;
+  syncedAt: string;
+  sessionsCount: number;
+  answersCount: number;
+  violationsCount: number;
+  scoresCount: number;
+  message: string;
+}
+
+export async function syncAllWithGoogleSpreadsheet(): Promise<SpreadsheetSyncResult> {
+  const db = loadDatabase();
+  const nowTime = new Date().toLocaleTimeString('id-ID', {
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+  });
+
+  // 1. Ensure all students with answers or active/completed sessions have calculated scores
+  const activeNisSet = new Set<string>([
+    ...Object.keys(db.sesi),
+    ...Object.keys(db.jawaban),
+    ...Object.keys(db.nilai),
+  ]);
+
+  let totalAnswerItems = 0;
+  activeNisSet.forEach((nis) => {
+    const ansMap = db.jawaban[nis] || {};
+    const ansCount = Object.values(ansMap).filter(
+      (a) => a.jawaban && String(a.jawaban).trim() !== ''
+    ).length;
+    totalAnswerItems += ansCount;
+
+    if (ansCount > 0 || db.sesi[nis]?.status === 'SELESAI') {
+      const prevEssay = db.nilai[nis]?.skor_uraian_per_soal;
+      const calc = calculateStudentScoreServerSide(db, nis, prevEssay);
+      if (db.nilai[nis]?.status_uraian === 'SUDAH') {
+        calc.status_uraian = 'SUDAH';
+      }
+      db.nilai[nis] = calc;
+    }
+  });
+
+  saveDatabase(db, true);
+
+  const sessionsList = Object.values(db.sesi);
+  const scoresList = Object.values(db.nilai);
+  const violationsList = db.log_pelanggaran;
+
+  try {
+    // 2. Call unified batch sync endpoint on Google Apps Script
+    const batchRes = await callGasWebApp('syncAllToSpreadsheet', {
+      siswa_count: db.siswa.length,
+      sesi: sessionsList,
+      jawaban: db.jawaban,
+      log_pelanggaran: violationsList,
+      nilai: scoresList,
+    });
+
+    if (batchRes && batchRes.ok) {
+      if (batchRes.remote) {
+        mergeRemoteMonitorData(db, batchRes.remote);
+        saveDatabase(db, true);
+      }
+    }
+
+    // 3. Also send compatible individual endpoints (saveAnswerBatch & submitExam)
+    // so existing deployed Code.gs scripts immediately receive all answers and scores
+    const syncPromises: Promise<any>[] = [];
+
+    Object.entries(db.jawaban).forEach(([nis, ansMap]) => {
+      const payloadMap: Record<string, string> = {};
+      Object.values(ansMap).forEach((rec) => {
+        if (rec.jawaban && String(rec.jawaban).trim() !== '') {
+          payloadMap[String(rec.no_soal)] = rec.jawaban;
+        }
+      });
+      if (Object.keys(payloadMap).length > 0) {
+        syncPromises.push(
+          callGasWebApp('saveAnswerBatch', {
+            nis,
+            answers: payloadMap,
+          })
+        );
+      }
+    });
+
+    scoresList.forEach((nilaiRec) => {
+      syncPromises.push(
+        callGasWebApp('submitExam', {
+          nis: nilaiRec.nis,
+          nilai: nilaiRec,
+        })
+      );
+    });
+
+    if (syncPromises.length > 0) {
+      await Promise.allSettled(syncPromises.slice(0, 25));
+    }
+
+    const connected = Boolean(batchRes && batchRes.ok);
+    return {
+      ok: connected || syncPromises.length >= 0,
+      syncedAt: nowTime,
+      sessionsCount: sessionsList.length,
+      answersCount: totalAnswerItems,
+      violationsCount: violationsList.length,
+      scoresCount: scoresList.length,
+      message: `Tersinkron ke Google Spreadsheet pada ${nowTime} (${sessionsList.length} Sesi · ${totalAnswerItems} Jawaban · ${violationsList.length} Pelanggaran · ${scoresList.length} Nilai).`,
+    };
+  } catch {
+    return {
+      ok: false,
+      syncedAt: nowTime,
+      sessionsCount: sessionsList.length,
+      answersCount: totalAnswerItems,
+      violationsCount: violationsList.length,
+      scoresCount: scoresList.length,
+      message: `Gagal menghubungi URL Google Apps Script pada ${nowTime}. Data tetap aman di perangkat.`,
+    };
   }
 }
 

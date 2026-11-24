@@ -140,12 +140,18 @@ function doPost(e) {
 
     if (action === "getQuestionsForStudent") {
       result = handleGetQuestionsForStudent(body);
+    } else if (action === "studentLogin") {
+      result = handleStudentLogin(body);
     } else if (action === "saveAnswerBatch") {
       result = handleSaveAnswerBatch(body);
     } else if (action === "logViolation") {
       result = handleLogViolation(body);
     } else if (action === "submitExam") {
       result = handleSubmitExam(body);
+    } else if (action === "syncAllToSpreadsheet") {
+      result = handleSyncAllToSpreadsheet(body);
+    } else if (action === "getRealtimeMonitorData") {
+      result = handleGetRealtimeMonitorData(body);
     } else {
       result = { ok: true, action: action, serverTime: new Date().toISOString() };
     }
@@ -157,6 +163,33 @@ function doPost(e) {
     return ContentService
       .createTextOutput(JSON.stringify({ ok: false, error: String(err) }))
       .setMimeType(ContentService.MimeType.JSON);
+  }
+}
+
+function handleStudentLogin(body) {
+  var lock = LockService.getScriptLock();
+  if (!lock.tryLock(5000)) return { ok: false, retry: true };
+  try {
+    var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName("Sesi");
+    if (sheet && body.sesi) {
+      var s = body.sesi;
+      var row = [
+        String(s.nis || body.nis || ""),
+        String(s.ruang || ""),
+        String(s.token_sesi || ""),
+        String(s.waktu_mulai || new Date().toISOString()),
+        String(s.batas_waktu || ""),
+        Number(s.tambahan_menit || 0),
+        String(s.status || "MENGERJAKAN"),
+        Number(s.jumlah_pelanggaran || 0),
+        Number(s.soal_terakhir || 1),
+        String(s.waktu_aktif_terakhir || new Date().toISOString())
+      ];
+      sheet.getRange(sheet.getLastRow() + 1, 1, 1, 10).setValues([row]);
+    }
+    return { ok: true, serverTime: new Date().toISOString() };
+  } finally {
+    lock.releaseLock();
   }
 }
 
@@ -259,4 +292,135 @@ function handleSubmitExam(body) {
     lock.releaseLock();
   }
 }
+
+function handleSyncAllToSpreadsheet(body) {
+  var lock = LockService.getScriptLock();
+  if (!lock.tryLock(8000)) return { ok: false, retry: true, error: "Lock sibuk" };
+  try {
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+
+    // 1. Sinkron Sheet Sesi
+    if (body.sesi) {
+      var sesiSheet = ss.getSheetByName("Sesi");
+      if (sesiSheet) {
+        var sesiKeys = Object.keys(body.sesi);
+        if (sesiKeys.length > 0) {
+          sesiSheet.clearContents();
+          var sesiHeaders = ["NIS", "ruang", "token_sesi", "waktu_mulai", "batas_waktu", "tambahan_menit", "status", "jumlah_pelanggaran", "soal_terakhir", "waktu_aktif_terakhir"];
+          var sesiRows = [sesiHeaders];
+          for (var i = 0; i < sesiKeys.length; i++) {
+            var s = body.sesi[sesiKeys[i]];
+            sesiRows.push([
+              String(s.nis || sesiKeys[i]),
+              String(s.ruang || ""),
+              String(s.token_sesi || ""),
+              String(s.waktu_mulai || ""),
+              String(s.batas_waktu || ""),
+              Number(s.tambahan_menit || 0),
+              String(s.status || "MENGERJAKAN"),
+              Number(s.jumlah_pelanggaran || 0),
+              Number(s.soal_terakhir || 1),
+              String(s.waktu_aktif_terakhir || "")
+            ]);
+          }
+          sesiSheet.getRange(1, 1, sesiRows.length, sesiHeaders.length).setValues(sesiRows);
+        }
+      }
+    }
+
+    // 2. Sinkron Sheet Jawaban
+    if (body.jawaban) {
+      var jwbSheet = ss.getSheetByName("Jawaban");
+      if (jwbSheet) {
+        var nisList = Object.keys(body.jawaban);
+        var jwbRows = [["NIS", "no_soal", "jawaban", "waktu_simpan"]];
+        for (var j = 0; j < nisList.length; j++) {
+          var nisKey = nisList[j];
+          var perSoal = body.jawaban[nisKey] || {};
+          var noList = Object.keys(perSoal);
+          for (var k = 0; k < noList.length; k++) {
+            var item = perSoal[noList[k]];
+            if (item && String(item.jawaban || "").trim() !== "") {
+              jwbRows.push([
+                String(nisKey),
+                Number(item.no_soal || noList[k]),
+                String(item.jawaban),
+                String(item.waktu_simpan || new Date().toISOString())
+              ]);
+            }
+          }
+        }
+        if (jwbRows.length > 1) {
+          jwbSheet.clearContents();
+          jwbSheet.getRange(1, 1, jwbRows.length, 4).setValues(jwbRows);
+        }
+      }
+    }
+
+    // 3. Sinkron Sheet Nilai
+    if (body.nilai) {
+      var nilaiSheet = ss.getSheetByName("Nilai");
+      if (nilaiSheet) {
+        var nilaiKeys = Object.keys(body.nilai);
+        if (nilaiKeys.length > 0) {
+          nilaiSheet.clearContents();
+          var nilaiHeaders = ["NIS", "nama", "kelas", "skor_pg", "skor_pgk", "skor_menjodohkan", "skor_isian", "skor_uraian", "nilai_akhir", "status_uraian"];
+          var nilaiRows = [nilaiHeaders];
+          for (var m = 0; m < nilaiKeys.length; m++) {
+            var n = body.nilai[nilaiKeys[m]];
+            nilaiRows.push([
+              String(n.nis || nilaiKeys[m]),
+              String(n.nama || ""),
+              String(n.kelas || ""),
+              Number(n.skor_pg || 0),
+              Number(n.skor_pgk || 0),
+              Number(n.skor_menjodohkan || 0),
+              Number(n.skor_isian || 0),
+              Number(n.skor_uraian || 0),
+              Number(n.nilai_akhir || 0),
+              String(n.status_uraian || "BELUM")
+            ]);
+          }
+          nilaiSheet.getRange(1, 1, nilaiRows.length, nilaiHeaders.length).setValues(nilaiRows);
+        }
+      }
+    }
+
+    return { ok: true, syncedAt: new Date().toISOString() };
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function handleGetRealtimeMonitorData() {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var result = { ok: true, sesi: {}, nilai: {}, serverTime: new Date().toISOString() };
+
+  var sesiSheet = ss.getSheetByName("Sesi");
+  if (sesiSheet && sesiSheet.getLastRow() > 1) {
+    var sData = sesiSheet.getDataRange().getValues();
+    for (var i = 1; i < sData.length; i++) {
+      var r = sData[i];
+      var nis = String(r[0] || "").trim();
+      if (nis) {
+        result.sesi[nis] = {
+          nis: nis,
+          ruang: String(r[1] || ""),
+          token_sesi: String(r[2] || ""),
+          waktu_mulai: String(r[3] || ""),
+          batas_waktu: String(r[4] || ""),
+          tambahan_menit: Number(r[5] || 0),
+          status: String(r[6] || "MENGERJAKAN"),
+          jumlah_pelanggaran: Number(r[7] || 0),
+          soal_terakhir: Number(r[8] || 1),
+          waktu_aktif_terakhir: String(r[9] || ""),
+          jumlah_terjawab: 0
+        };
+      }
+    }
+  }
+
+  return result;
+}
 `;
+

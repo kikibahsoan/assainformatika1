@@ -38,12 +38,15 @@ import {
   evaluateSingleQuestionServerSide,
   loadDatabase,
   PenggunaRecord,
+  pullRealtimeMonitorFromSpreadsheet,
   resetDatabaseToDefault,
   saveDatabase,
   SesiRecord,
   simpleSha256Simulation,
   SiswaRecord,
   SpreadsheetDatabase,
+  subscribeToRealtimeDatabase,
+  syncAllWithGoogleSpreadsheet,
 } from '../services/cbtBackendService';
 
 interface TeacherSupervisorPanelProps {
@@ -75,6 +78,8 @@ export const TeacherSupervisorPanel: React.FC<TeacherSupervisorPanelProps> = ({
     new Date().toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit', second: '2-digit' })
   );
   const [toastMsg, setToastMsg] = useState<string | null>(null);
+  const [isSyncingSheet, setIsSyncingSheet] = useState<boolean>(false);
+  const [lastSheetSyncTime, setLastSheetSyncTime] = useState<string | null>(null);
 
   // Essay Grading State (starts with first student in sheet, no dummy pre-scored student)
   const [selectedStudentForEssay, setSelectedStudentForEssay] = useState<string>(
@@ -122,12 +127,54 @@ export const TeacherSupervisorPanel: React.FC<TeacherSupervisorPanelProps> = ({
     );
   };
 
-  // Auto-refresh Live Monitor every 12 seconds (Prompt: "Perbarui otomatis tiap 10-15 detik")
-  useEffect(() => {
-    const interval = window.setInterval(() => {
+  const handleSyncToSpreadsheet = async () => {
+    if (isSyncingSheet) return;
+    setIsSyncingSheet(true);
+    try {
+      const res = await syncAllWithGoogleSpreadsheet();
       refreshFromStorage();
-    }, 12000);
-    return () => clearInterval(interval);
+      const timeStr = new Date().toLocaleTimeString('id-ID', {
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit',
+      });
+      setLastSheetSyncTime(timeStr);
+      setGasStatusText(res.message);
+      showToast(res.message);
+    } finally {
+      setIsSyncingSheet(false);
+    }
+  };
+
+  // Real-time 0ms Subscription (BroadcastChannel + CustomEvent + storage) & Continuous Live Timer + Cloud Pull
+  useEffect(() => {
+    const unsubscribe = subscribeToRealtimeDatabase((fresh) => {
+      setDb(fresh);
+      setLastRefreshed(
+        new Date().toLocaleTimeString('id-ID', {
+          hour: '2-digit',
+          minute: '2-digit',
+          second: '2-digit',
+        })
+      );
+    });
+
+    // Fast 2-second ticker so "Aktif Terakhir" (Baru saja / X dtk lalu) and "Sisa Waktu" tick smoothly in real-time
+    const localTicker = window.setInterval(() => {
+      refreshFromStorage();
+    }, 2000);
+
+    // Background cloud pull every 6 seconds from Google Apps Script Spreadsheet
+    const cloudPullTicker = window.setInterval(() => {
+      void pullRealtimeMonitorFromSpreadsheet();
+    }, 6000);
+    void pullRealtimeMonitorFromSpreadsheet();
+
+    return () => {
+      unsubscribe();
+      clearInterval(localTicker);
+      clearInterval(cloudPullTicker);
+    };
   }, []);
 
   // Load selected student's existing essay scores when selectedStudentForEssay changes
@@ -140,9 +187,9 @@ export const TeacherSupervisorPanel: React.FC<TeacherSupervisorPanelProps> = ({
     setEssayScoreInputs(initialMap);
   }, [selectedStudentForEssay, db.nilai]);
 
-  // Filtered students list based on supervisor's assigned room
+  // Filtered students list sorted so active/submitted students appear at the top in real-time
   const visibleStudents = useMemo(() => {
-    return db.siswa.filter((s) => {
+    const filtered = db.siswa.filter((s) => {
       if (staff.peran === 'PENGAWAS' && staff.ruang_tugas !== 'ALL') {
         if (s.ruang !== staff.ruang_tugas) return false;
       }
@@ -154,7 +201,35 @@ export const TeacherSupervisorPanel: React.FC<TeacherSupervisorPanelProps> = ({
       }
       return true;
     });
-  }, [db.siswa, staff, selectedRoomFilter, selectedClassFilter, searchQuery]);
+
+    return [...filtered].sort((a, b) => {
+      const sesiA = db.sesi[a.nis];
+      const sesiB = db.sesi[b.nis];
+      const rankA =
+        sesiA?.status === 'MENGERJAKAN'
+          ? 3
+          : sesiA?.status === 'TERKUNCI'
+          ? 2
+          : sesiA?.status === 'SELESAI'
+          ? 1
+          : 0;
+      const rankB =
+        sesiB?.status === 'MENGERJAKAN'
+          ? 3
+          : sesiB?.status === 'TERKUNCI'
+          ? 2
+          : sesiB?.status === 'SELESAI'
+          ? 1
+          : 0;
+      if (rankA !== rankB) return rankB - rankA;
+      if (sesiA && sesiB) {
+        const timeA = new Date(sesiA.waktu_aktif_terakhir).getTime() || 0;
+        const timeB = new Date(sesiB.waktu_aktif_terakhir).getTime() || 0;
+        if (timeA !== timeB) return timeB - timeA;
+      }
+      return a.nis.localeCompare(b.nis);
+    });
+  }, [db.siswa, db.sesi, staff, selectedRoomFilter, selectedClassFilter, searchQuery]);
 
   // ===================== SUPERVISOR CONTROL ACTIONS =====================
 
@@ -719,8 +794,18 @@ export const TeacherSupervisorPanel: React.FC<TeacherSupervisorPanelProps> = ({
             )}
           </nav>
 
-          {/* Zone 3: Primary Action / Logout */}
+          {/* Zone 3: Primary Action / Sync to Spreadsheet / Logout */}
           <div className="flex items-center gap-2 shrink-0">
+            <button
+              type="button"
+              onClick={() => void handleSyncToSpreadsheet()}
+              disabled={isSyncingSheet}
+              className="px-3.5 py-1.5 rounded-lg bg-emerald-700 hover:bg-emerald-800 disabled:opacity-60 text-white text-xs font-semibold flex items-center gap-1.5 whitespace-nowrap shrink-0"
+              title="Sinkronkan semua sesi, jawaban, pelanggaran, dan nilai siswa ke Google Spreadsheet"
+            >
+              <FileSpreadsheet className={`w-3.5 h-3.5 ${isSyncingSheet ? 'animate-spin' : ''}`} />
+              {isSyncingSheet ? 'Menyinkronkan...' : 'Sinkron ke Spreadsheet'}
+            </button>
             <button
               type="button"
               onClick={onLogout}
@@ -749,64 +834,142 @@ export const TeacherSupervisorPanel: React.FC<TeacherSupervisorPanelProps> = ({
             {/* Unified Exam Control Card (No Ruang Ujian Utama / Ruang Ujian 2) */}
             {db.ruang.slice(0, 1).map((room) => {
               const isRunning = room.status_mulai === 'BERJALAN';
+              const activeCount = Object.values(db.sesi).filter((s) => s.status === 'MENGERJAKAN').length;
+              const finishedCount = Object.values(db.sesi).filter((s) => s.status === 'SELESAI').length;
+              const totalSavedAnswers = Object.values(db.jawaban).reduce(
+                (acc, studentMap) =>
+                  acc +
+                  Object.values(studentMap).filter((a) => String(a.jawaban || '').trim() !== '').length,
+                0
+              );
+
               return (
-                <div
-                  key={room.kode_ruang}
-                  className="bg-white border border-slate-200 rounded-xl p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4"
-                >
-                  <div>
-                    <div className="flex items-center gap-2">
-                      <span className="text-sm font-bold text-slate-900">
-                        Kontrol Sesi Ujian — {db.pengaturan.judul_ujian}
-                      </span>
-                      <span className="text-xs font-semibold text-slate-500">
-                        · Status: {room.status_mulai}
-                      </span>
+                <div key={room.kode_ruang} className="space-y-4">
+                  <div className="bg-white border border-slate-200 rounded-xl p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <span className="text-sm font-bold text-slate-900">
+                          Kontrol Sesi Ujian — {db.pengaturan.judul_ujian}
+                        </span>
+                        <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-md bg-emerald-50 border border-emerald-200 text-[11px] font-bold text-emerald-800">
+                          <span className="w-2 h-2 rounded-full bg-emerald-600 animate-pulse" />
+                          REALTIME AKTIF ({room.status_mulai})
+                        </span>
+                      </div>
+                      <div className="mt-1 text-xs text-slate-600 flex flex-wrap items-center gap-3">
+                        <span>
+                          Token Ujian:{' '}
+                          <strong className="font-mono text-blue-700 text-sm">
+                            {room.token_ujian}
+                          </strong>
+                        </span>
+                        <span>·</span>
+                        <span>
+                          PIN Buka Kunci Pengawas:{' '}
+                          <strong className="font-mono text-slate-900">
+                            {db.pengaturan.pin_pengawas}
+                          </strong>
+                        </span>
+                        <span>·</span>
+                        <span>
+                          Total Peserta Terdaftar:{' '}
+                          <strong className="font-mono text-slate-900">
+                            {db.siswa.filter((s) => !s.nis.startsWith('SIM')).length} Siswa (12 Kelas)
+                          </strong>
+                        </span>
+                        {lastSheetSyncTime && (
+                          <>
+                            <span>·</span>
+                            <span className="text-emerald-700 font-semibold">
+                              Sinkron Spreadsheet Terakhir: {lastSheetSyncTime}
+                            </span>
+                          </>
+                        )}
+                      </div>
                     </div>
-                    <div className="mt-1 text-xs text-slate-600 flex flex-wrap items-center gap-3">
-                      <span>
-                        Token Ujian:{' '}
-                        <strong className="font-mono text-blue-700 text-sm">
-                          {room.token_ujian}
-                        </strong>
-                      </span>
-                      <span>·</span>
-                      <span>
-                        PIN Buka Kunci Pengawas:{' '}
-                        <strong className="font-mono text-slate-900">
-                          {db.pengaturan.pin_pengawas}
-                        </strong>
-                      </span>
-                      <span>·</span>
-                      <span>
-                        Total Peserta Terdaftar:{' '}
-                        <strong className="font-mono text-slate-900">
-                          {db.siswa.filter((s) => !s.nis.startsWith('SIM')).length} Siswa (12 Kelas)
-                        </strong>
-                      </span>
+
+                    <div className="flex flex-wrap items-center gap-2 shrink-0">
+                      <button
+                        type="button"
+                        onClick={() => void handleSyncToSpreadsheet()}
+                        disabled={isSyncingSheet}
+                        className="px-3.5 py-2 bg-blue-700 hover:bg-blue-800 disabled:opacity-60 text-white text-xs font-semibold rounded-lg flex items-center gap-1.5 whitespace-nowrap"
+                      >
+                        <FileSpreadsheet className={`w-3.5 h-3.5 ${isSyncingSheet ? 'animate-spin' : ''}`} />
+                        {isSyncingSheet ? 'Menyinkronkan ke Spreadsheet...' : 'Sinkron ke Spreadsheet'}
+                      </button>
+
+                      {!isRunning ? (
+                        <button
+                          type="button"
+                          onClick={() => handleToggleRoomStatus(room.kode_ruang, 'BERJALAN')}
+                          className="px-3.5 py-2 bg-emerald-700 hover:bg-emerald-800 text-white text-xs font-semibold rounded-lg flex items-center gap-1.5 whitespace-nowrap"
+                        >
+                          <Play className="w-3.5 h-3.5" />
+                          Aktifkan Sesi Ujian
+                        </button>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={() => handleToggleRoomStatus(room.kode_ruang, 'BELUM')}
+                          className="px-3.5 py-2 bg-amber-600 hover:bg-amber-700 text-white text-xs font-semibold rounded-lg flex items-center gap-1.5 whitespace-nowrap"
+                        >
+                          <Square className="w-3.5 h-3.5" />
+                          Tunda Sesi Ujian
+                        </button>
+                      )}
                     </div>
                   </div>
 
-                  <div className="flex items-center gap-2 shrink-0">
-                    {!isRunning ? (
-                      <button
-                        type="button"
-                        onClick={() => handleToggleRoomStatus(room.kode_ruang, 'BERJALAN')}
-                        className="px-3.5 py-2 bg-emerald-700 hover:bg-emerald-800 text-white text-xs font-semibold rounded-lg flex items-center gap-1.5 whitespace-nowrap"
-                      >
-                        <Play className="w-3.5 h-3.5" />
-                        Aktifkan Sesi Ujian
-                      </button>
-                    ) : (
-                      <button
-                        type="button"
-                        onClick={() => handleToggleRoomStatus(room.kode_ruang, 'BELUM')}
-                        className="px-3.5 py-2 bg-amber-600 hover:bg-amber-700 text-white text-xs font-semibold rounded-lg flex items-center gap-1.5 whitespace-nowrap"
-                      >
-                        <Square className="w-3.5 h-3.5" />
-                        Tunda Sesi Ujian
-                      </button>
-                    )}
+                  {/* Real-Time Live Summary Counters */}
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                    <div className="bg-white border border-slate-200 rounded-xl p-3.5 flex items-center justify-between">
+                      <div>
+                        <p className="text-[11px] font-semibold text-slate-500 uppercase">
+                          Sedang Mengerjakan (Live)
+                        </p>
+                        <p className="text-xl font-bold font-mono tabular-nums text-blue-700 mt-0.5">
+                          {activeCount} Siswa
+                        </p>
+                      </div>
+                      <Activity className="w-5 h-5 text-blue-600" />
+                    </div>
+
+                    <div className="bg-white border border-slate-200 rounded-xl p-3.5 flex items-center justify-between">
+                      <div>
+                        <p className="text-[11px] font-semibold text-slate-500 uppercase">
+                          Selesai Submit
+                        </p>
+                        <p className="text-xl font-bold font-mono tabular-nums text-emerald-700 mt-0.5">
+                          {finishedCount} Siswa
+                        </p>
+                      </div>
+                      <CheckCircle2 className="w-5 h-5 text-emerald-600" />
+                    </div>
+
+                    <div className="bg-white border border-slate-200 rounded-xl p-3.5 flex items-center justify-between">
+                      <div>
+                        <p className="text-[11px] font-semibold text-slate-500 uppercase">
+                          Jawaban Masuk (Realtime)
+                        </p>
+                        <p className="text-xl font-bold font-mono tabular-nums text-slate-900 mt-0.5">
+                          {totalSavedAnswers} Butir
+                        </p>
+                      </div>
+                      <Database className="w-5 h-5 text-slate-700" />
+                    </div>
+
+                    <div className="bg-white border border-slate-200 rounded-xl p-3.5 flex items-center justify-between">
+                      <div>
+                        <p className="text-[11px] font-semibold text-slate-500 uppercase">
+                          Log Pelanggaran Masuk
+                        </p>
+                        <p className="text-xl font-bold font-mono tabular-nums text-amber-700 mt-0.5">
+                          {db.log_pelanggaran.length} Kejadian
+                        </p>
+                      </div>
+                      <ShieldAlert className="w-5 h-5 text-amber-600" />
+                    </div>
                   </div>
                 </div>
               );
@@ -840,10 +1003,13 @@ export const TeacherSupervisorPanel: React.FC<TeacherSupervisorPanelProps> = ({
                 </select>
               </div>
 
-              <div className="flex items-center gap-3 text-xs text-slate-600">
-                <span>
-                  Pembaruan otomatis tiap 12 dtk (Terakhir:{' '}
-                  <strong className="font-mono tabular-nums">{lastRefreshed}</strong>)
+              <div className="flex flex-wrap items-center gap-2.5 text-xs text-slate-600">
+                <span className="inline-flex items-center gap-1.5">
+                  <span className="w-2 h-2 rounded-full bg-emerald-600 animate-ping" />
+                  <span>
+                    Pantauan Realtime Instan (Update:{' '}
+                    <strong className="font-mono tabular-nums">{lastRefreshed}</strong>)
+                  </span>
                 </span>
                 <button
                   type="button"
@@ -852,6 +1018,15 @@ export const TeacherSupervisorPanel: React.FC<TeacherSupervisorPanelProps> = ({
                 >
                   <RefreshCw className="w-3.5 h-3.5" />
                   Segarkan
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void handleSyncToSpreadsheet()}
+                  disabled={isSyncingSheet}
+                  className="px-3 py-1.5 bg-emerald-700 hover:bg-emerald-800 disabled:opacity-60 text-white font-semibold rounded-lg flex items-center gap-1.5"
+                >
+                  <FileSpreadsheet className={`w-3.5 h-3.5 ${isSyncingSheet ? 'animate-spin' : ''}`} />
+                  {isSyncingSheet ? 'Menyinkronkan...' : 'Sinkron ke Spreadsheet'}
                 </button>
               </div>
             </div>
@@ -866,7 +1041,7 @@ export const TeacherSupervisorPanel: React.FC<TeacherSupervisorPanelProps> = ({
                       <th className="py-3 px-4 font-bold">Nama Siswa</th>
                       <th className="py-3 px-4 font-bold">Kelas</th>
                       <th className="py-3 px-4 font-bold">Status Sesi</th>
-                      <th className="py-3 px-4 font-bold">Progres Soal</th>
+                      <th className="py-3 px-4 font-bold">Progres Soal (Realtime)</th>
                       <th className="py-3 px-4 font-bold">Pelanggaran</th>
                       <th className="py-3 px-4 font-bold">Sisa Waktu</th>
                       <th className="py-3 px-4 font-bold">Aktif Terakhir</th>
@@ -900,13 +1075,18 @@ export const TeacherSupervisorPanel: React.FC<TeacherSupervisorPanelProps> = ({
                             <div className="flex items-center gap-2">
                               <div className="w-20 h-2 bg-slate-200 rounded-full overflow-hidden">
                                 <div
-                                  className="h-full bg-blue-700"
+                                  className="h-full bg-blue-700 transition-all duration-300"
                                   style={{ width: `${pct}%` }}
                                 />
                               </div>
                               <span className="font-mono font-bold tabular-nums text-slate-800">
                                 {meta.progress}/40
                               </span>
+                              {sesi && sesi.status === 'MENGERJAKAN' && (
+                                <span className="text-[11px] font-mono text-blue-700 font-semibold">
+                                  (Soal #{sesi.soal_terakhir || 1})
+                                </span>
+                              )}
                             </div>
                           </td>
                           <td className="py-3 px-4 font-mono font-bold tabular-nums">

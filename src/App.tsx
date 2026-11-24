@@ -23,15 +23,53 @@ import {
 
 type LoginPortalMode = 'SISWA' | 'STAFF';
 
+const ACTIVE_STUDENT_SESSION_KEY = 'ASSA_ACTIVE_STUDENT_SESSION_V5';
+const ACTIVE_STAFF_SESSION_KEY = 'ASSA_ACTIVE_STAFF_SESSION_V5';
+
 export default function App() {
   const [portalMode, setPortalMode] = useState<LoginPortalMode>('SISWA');
 
-  // Active logged-in states
+  // Active logged-in states (auto-restored if student or teacher accidentally refreshes/closes tab)
   const [activeStudent, setActiveStudent] = useState<{
     student: SiswaRecord;
     token: string;
-  } | null>(null);
-  const [activeStaff, setActiveStaff] = useState<PenggunaRecord | null>(null);
+  } | null>(() => {
+    try {
+      const savedRaw = localStorage.getItem(ACTIVE_STUDENT_SESSION_KEY);
+      if (!savedRaw) return null;
+      const parsed = JSON.parse(savedRaw) as { nis: string; token: string };
+      if (!parsed?.nis) return null;
+      const currentDb = loadDatabase();
+      const foundStudent = currentDb.siswa.find((s) => s.nis === parsed.nis);
+      const existingSesi = currentDb.sesi[parsed.nis];
+      if (foundStudent && existingSesi) {
+        return {
+          student: foundStudent,
+          token: existingSesi.token_sesi || parsed.token,
+        };
+      }
+    } catch {
+      // ignore corrupted storage
+    }
+    return null;
+  });
+
+  const [activeStaff, setActiveStaff] = useState<PenggunaRecord | null>(() => {
+    try {
+      const savedStaffRaw = localStorage.getItem(ACTIVE_STAFF_SESSION_KEY);
+      if (!savedStaffRaw) return null;
+      const parsedStaff = JSON.parse(savedStaffRaw) as { username: string };
+      if (!parsedStaff?.username) return null;
+      const currentDb = loadDatabase();
+      return (
+        currentDb.pengguna.find(
+          (u) => u.username.toLowerCase() === parsedStaff.username.toLowerCase()
+        ) || null
+      );
+    } catch {
+      return null;
+    }
+  });
 
   // Student Login State (strictly mapped to Kelas & Nama from data_kelas_10_aplikasi.pdf)
   const [selectedKelas, setSelectedKelas] = useState<string>('');
@@ -55,6 +93,13 @@ export default function App() {
     if (!selectedKelas) return [];
     return db.siswa.filter((s) => s.kelas === selectedKelas && !s.nis.startsWith('SIM'));
   }, [db.siswa, selectedKelas]);
+
+  // Detect if the currently selected student in the dropdown already has an active or completed exam session
+  const selectedStudentExistingSession = useMemo(() => {
+    if (!selectedStudentNis) return null;
+    const latestDb = loadDatabase();
+    return latestDb.sesi[selectedStudentNis] || null;
+  }, [selectedStudentNis]);
 
   useEffect(() => {
     checkGasWebAppStatus().then((res) => {
@@ -113,33 +158,17 @@ export default function App() {
       // Keep student assigned to their actual class
       student.ruang = student.kelas;
 
-      // Notify embedded Google Apps Script Web App
-      await callGasWebApp('studentLogin', {
-        nis: student.nis,
-        nama: student.nama,
-        kelas: student.kelas,
-        token_ruang: cleanToken,
-      });
-
       const clientDeviceId = getBrowserDeviceId();
       const existingSession = freshDb.sesi[student.nis];
-
-      if (
-        existingSession &&
-        existingSession.status === 'MENGERJAKAN' &&
-        existingSession.device_id !== clientDeviceId &&
-        existingSession.device_id !== 'RESET-BY-SUPERVISOR'
-      ) {
-        setStudentError(
-          'Akun Anda sedang aktif di perangkat lain. Minta Pengawas menekan tombol Reset Sesi jika perangkat Anda diganti.'
-        );
-        setIsLoggingIn(false);
-        return;
-      }
-
       const nowIso = new Date().toISOString();
       const sessionToken =
         existingSession?.token_sesi || `SES-${student.nis}-${Date.now().toString(36)}`;
+
+      // Count any already-saved answers so progress is never lost on re-login
+      const savedAnswerMap = freshDb.jawaban[student.nis] || {};
+      const existingAnsweredCount = Object.values(savedAnswerMap).filter(
+        (a) => a.jawaban && String(a.jawaban).trim() !== ''
+      ).length;
 
       if (!existingSession || existingSession.status === 'BELUM') {
         const deadlineIso = new Date(
@@ -156,16 +185,43 @@ export default function App() {
           status: 'MENGERJAKAN',
           jumlah_pelanggaran: 0,
           soal_terakhir: 1,
-          jumlah_terjawab: 0,
+          jumlah_terjawab: existingAnsweredCount,
           waktu_aktif_terakhir: nowIso,
         };
       } else {
+        // Student was accidentally logged out / closed browser / switched connection:
+        // Allow seamless continuation keeping remaining time, last question, and all saved answers
         freshDb.sesi[student.nis].ruang = student.kelas;
         freshDb.sesi[student.nis].device_id = clientDeviceId;
         freshDb.sesi[student.nis].waktu_aktif_terakhir = nowIso;
+        if (freshDb.sesi[student.nis].status === 'TERKUNCI') {
+          freshDb.sesi[student.nis].status = 'MENGERJAKAN';
+        }
+        if (existingAnsweredCount > (freshDb.sesi[student.nis].jumlah_terjawab || 0)) {
+          freshDb.sesi[student.nis].jumlah_terjawab = existingAnsweredCount;
+        }
       }
 
-      saveDatabase(freshDb);
+      saveDatabase(freshDb, true);
+
+      try {
+        localStorage.setItem(
+          ACTIVE_STUDENT_SESSION_KEY,
+          JSON.stringify({ nis: student.nis, token: sessionToken })
+        );
+      } catch {
+        // ignore storage quota error
+      }
+
+      // Notify embedded Google Apps Script Web App in background
+      void callGasWebApp('studentLogin', {
+        nis: student.nis,
+        nama: student.nama,
+        kelas: student.kelas,
+        token_ruang: cleanToken,
+        sesi: freshDb.sesi[student.nis],
+      });
+
       setActiveStudent({ student, token: sessionToken });
     } finally {
       setIsLoggingIn(false);
@@ -182,7 +238,7 @@ export default function App() {
       const cleanUser = staffUser.trim().toLowerCase();
       const cleanPassHash = simpleSha256Simulation(staffPass);
 
-      await callGasWebApp('staffLogin', { username: cleanUser });
+      void callGasWebApp('staffLogin', { username: cleanUser });
 
       const user = freshDb.pengguna.find(
         (u) => u.username.toLowerCase() === cleanUser && u.password_hash === cleanPassHash
@@ -192,6 +248,15 @@ export default function App() {
         setStaffError('Username atau kata sandi Guru & Pengawas tidak sesuai.');
         setIsLoggingIn(false);
         return;
+      }
+
+      try {
+        localStorage.setItem(
+          ACTIVE_STAFF_SESSION_KEY,
+          JSON.stringify({ username: user.username })
+        );
+      } catch {
+        // ignore
       }
 
       setActiveStaff(user);
@@ -205,7 +270,14 @@ export default function App() {
       <StudentExamView
         student={activeStudent.student}
         sessionToken={activeStudent.token}
-        onLogout={() => setActiveStudent(null)}
+        onLogout={() => {
+          try {
+            localStorage.removeItem(ACTIVE_STUDENT_SESSION_KEY);
+          } catch {
+            // ignore
+          }
+          setActiveStudent(null);
+        }}
       />
     );
   }
@@ -214,7 +286,14 @@ export default function App() {
     return (
       <TeacherSupervisorPanel
         staff={activeStaff}
-        onLogout={() => setActiveStaff(null)}
+        onLogout={() => {
+          try {
+            localStorage.removeItem(ACTIVE_STAFF_SESSION_KEY);
+          } catch {
+            // ignore
+          }
+          setActiveStaff(null);
+        }}
       />
     );
   }
@@ -347,13 +426,36 @@ export default function App() {
                       ? `-- Pilih Nama Siswa (${studentsInSelectedKelas.length} Siswa) --`
                       : '-- Pilih Kelas Terlebih Dahulu --'}
                   </option>
-                  {studentsInSelectedKelas.map((s) => (
-                    <option key={s.nis} value={s.nis}>
-                      {s.nama}
-                    </option>
-                  ))}
+                  {studentsInSelectedKelas.map((s) => {
+                    const sSesi = db.sesi[s.nis];
+                    const suffix =
+                      sSesi?.status === 'MENGERJAKAN'
+                        ? ` (Sedang Mengerjakan · ${sSesi.jumlah_terjawab || 0}/40 Soal)`
+                        : sSesi?.status === 'SELESAI'
+                        ? ' (Selesai)'
+                        : '';
+                    return (
+                      <option key={s.nis} value={s.nis}>
+                        {s.nama}
+                        {suffix}
+                      </option>
+                    );
+                  })}
                 </select>
               </div>
+
+              {selectedStudentExistingSession &&
+                selectedStudentExistingSession.status === 'MENGERJAKAN' && (
+                  <div className="p-3 bg-emerald-50 border border-emerald-200 rounded-xl text-xs text-emerald-900">
+                    <span className="font-bold block">Sesi Ujian Aktif Ditemukan</span>
+                    <span>
+                      Progres tersimpan:{' '}
+                      <strong>{selectedStudentExistingSession.jumlah_terjawab || 0}/40 soal</strong>{' '}
+                      (terakhir di Soal #{selectedStudentExistingSession.soal_terakhir || 1}).
+                      Masukkan Token Ujian untuk langsung melanjutkan.
+                    </span>
+                  </div>
+                )}
 
               <div>
                 <label className="block text-xs font-bold text-slate-700 mb-1.5">
@@ -378,7 +480,11 @@ export default function App() {
                 className="w-full py-3.5 px-5 bg-emerald-700 hover:bg-emerald-800 disabled:opacity-60 text-white font-bold text-sm rounded-xl shadow-sm transition-all flex items-center justify-center gap-2 cursor-pointer"
               >
                 <UserCheck className="w-4 h-4" />
-                {isLoggingIn ? 'Memverifikasi...' : 'Mulai Ujian'}
+                {isLoggingIn
+                  ? 'Memverifikasi...'
+                  : selectedStudentExistingSession?.status === 'MENGERJAKAN'
+                  ? `Lanjutkan Ujian (Soal #${selectedStudentExistingSession.soal_terakhir || 1})`
+                  : 'Mulai Ujian'}
               </button>
             </form>
           ) : (
