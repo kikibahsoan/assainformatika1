@@ -1,0 +1,6 @@
+{
+  "name": "TKA Informatika — CBT SMKN 2 Gorontalo",
+  "description": "Aplikasi Ujian Berbasis Komputer (CBT) TKA Informatika Kelas X SMKN 2 Gorontalo dengan Avatar Proktor 3D, Sistem Anti-Curang, Panel Pengawas & Guru, Simulator Uji Beban 300 Siswa, dan Integrasi Google Apps Script.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
