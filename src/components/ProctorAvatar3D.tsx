@@ -23,7 +23,7 @@ export interface ProctorAvatarProps {
 }
 
 const REFERENCE_IMAGE_URL =
-  '/assets/aistudio/file_00000000ad2c8207ab460ceba18022a1_8a190914.png';
+  './assets/aistudio/file_00000000ad2c8207ab460ceba18022a1_8a190914.png';
 
 export const ProctorAvatar3D: React.FC<ProctorAvatarProps> = ({
   message,
