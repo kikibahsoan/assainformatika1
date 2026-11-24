@@ -10,15 +10,17 @@ import {
 } from 'lucide-react';
 import { StudentExamView } from './components/StudentExamView';
 import { TeacherSupervisorPanel } from './components/TeacherSupervisorPanel';
-import { KELAS_10_LIST } from './data/studentsData';
+import { GURU_TRIAL_ACCOUNTS, KELAS_10_LIST } from './data/studentsData';
 import {
   callGasWebApp,
   checkGasWebAppStatus,
+  clearStudentResetTimestamp,
   loadDatabase,
   PenggunaRecord,
   saveDatabase,
   simpleSha256Simulation,
   SiswaRecord,
+  subscribeToRealtimeDatabase,
 } from './services/cbtBackendService';
 
 type LoginPortalMode = 'SISWA' | 'STAFF';
@@ -28,6 +30,7 @@ const ACTIVE_STAFF_SESSION_KEY = 'ASSA_ACTIVE_STAFF_SESSION_V5';
 
 export default function App() {
   const [portalMode, setPortalMode] = useState<LoginPortalMode>('SISWA');
+  const [db, setDb] = useState(() => loadDatabase());
 
   // Active logged-in states (auto-restored if student or teacher accidentally refreshes/closes tab)
   const [activeStudent, setActiveStudent] = useState<{
@@ -71,7 +74,7 @@ export default function App() {
     }
   });
 
-  // Student Login State (strictly mapped to Kelas & Nama from data_kelas_10_aplikasi.pdf)
+  // Student Login State (strictly mapped to Kelas & Nama from data_kelas_10_aplikasi.pdf + 5 Guru Informatika)
   const [selectedKelas, setSelectedKelas] = useState<string>('');
   const [selectedStudentNis, setSelectedStudentNis] = useState<string>('');
   const [roomTokenInput, setRoomTokenInput] = useState<string>('');
@@ -86,9 +89,14 @@ export default function App() {
   // Google Apps Script Web App connection status
   const [gasConnected, setGasConnected] = useState<boolean>(true);
 
-  const db = loadDatabase();
+  useEffect(() => {
+    const unsub = subscribeToRealtimeDatabase((fresh) => {
+      setDb({ ...fresh });
+    });
+    return () => unsub();
+  }, []);
 
-  // Filter students exclusively from the selected class in data_kelas_10_aplikasi.pdf
+  // Filter students exclusively from the selected class
   const studentsInSelectedKelas = useMemo(() => {
     if (!selectedKelas) return [];
     return db.siswa.filter((s) => s.kelas === selectedKelas && !s.nis.startsWith('SIM'));
@@ -97,9 +105,8 @@ export default function App() {
   // Detect if the currently selected student in the dropdown already has an active or completed exam session
   const selectedStudentExistingSession = useMemo(() => {
     if (!selectedStudentNis) return null;
-    const latestDb = loadDatabase();
-    return latestDb.sesi[selectedStudentNis] || null;
-  }, [selectedStudentNis]);
+    return db.sesi[selectedStudentNis] || null;
+  }, [db.sesi, selectedStudentNis]);
 
   useEffect(() => {
     checkGasWebAppStatus().then((res) => {
@@ -160,7 +167,7 @@ export default function App() {
 
       const student = freshDb.siswa.find((s) => s.nis === selectedStudentNis);
       if (!student) {
-        setStudentError('Data siswa tidak ditemukan di daftar Kelas 10.');
+        setStudentError('Data peserta tidak ditemukan.');
         setIsLoggingIn(false);
         return;
       }
@@ -178,6 +185,9 @@ export default function App() {
         return;
       }
 
+      // Clear any previous reset timestamp so new answers sync cleanly
+      clearStudentResetTimestamp(student.nis);
+
       // Keep student assigned to their actual class
       student.ruang = student.kelas;
 
@@ -185,7 +195,9 @@ export default function App() {
       const existingSession = freshDb.sesi[student.nis];
       const nowIso = new Date().toISOString();
       const sessionToken =
-        existingSession?.token_sesi || `SES-${student.nis}-${Date.now().toString(36)}`;
+        existingSession?.token_sesi && existingSession.token_sesi !== 'RESET'
+          ? existingSession.token_sesi
+          : `SES-${student.nis}-${Date.now().toString(36)}`;
 
       // Count any already-saved answers so progress is never lost on re-login
       const savedAnswerMap = freshDb.jawaban[student.nis] || {};
@@ -226,6 +238,7 @@ export default function App() {
       }
 
       saveDatabase(freshDb, true);
+      setDb({ ...freshDb });
 
       try {
         localStorage.setItem(
@@ -259,8 +272,107 @@ export default function App() {
     try {
       const freshDb = loadDatabase();
       const cleanUser = staffUser.trim().toLowerCase();
-      const cleanPassHash = simpleSha256Simulation(staffPass);
+      const rawPass = staffPass.trim();
 
+      // 1. Check if username & password match one of the 5 Login Percobaan Guru Informatika
+      const matchedTrialGuru = GURU_TRIAL_ACCOUNTS.find((g) => {
+        const userMatches =
+          cleanUser === g.username.toLowerCase() ||
+          cleanUser === g.nis.toLowerCase() ||
+          cleanUser === g.label.toLowerCase().replace(/\s+/g, '');
+        const passMatches =
+          g.password === rawPass ||
+          (g.altPasswords as readonly string[]).includes(rawPass.toLowerCase());
+        return userMatches && passMatches;
+      });
+
+      if (matchedTrialGuru) {
+        requestFullscreenImmediately();
+
+        let guruStudent = freshDb.siswa.find((s) => s.nis === matchedTrialGuru.nis);
+        if (!guruStudent) {
+          guruStudent = {
+            nis: matchedTrialGuru.nis,
+            nama: matchedTrialGuru.nama,
+            kelas: 'GURU-INFORMATIKA',
+            ruang: 'GURU-INFORMATIKA',
+            password_hash: simpleSha256Simulation(matchedTrialGuru.password),
+          };
+          freshDb.siswa.unshift(guruStudent);
+        }
+
+        clearStudentResetTimestamp(guruStudent.nis);
+        guruStudent.ruang = 'GURU-INFORMATIKA';
+
+        const clientDeviceId = getBrowserDeviceId();
+        const existingSession = freshDb.sesi[guruStudent.nis];
+        const nowIso = new Date().toISOString();
+        const sessionToken =
+          existingSession?.token_sesi && existingSession.token_sesi !== 'RESET'
+            ? existingSession.token_sesi
+            : `SES-${guruStudent.nis}-${Date.now().toString(36)}`;
+
+        const savedAnswerMap = freshDb.jawaban[guruStudent.nis] || {};
+        const existingAnsweredCount = Object.values(savedAnswerMap).filter(
+          (a) => a.jawaban && String(a.jawaban).trim() !== ''
+        ).length;
+
+        if (!existingSession || existingSession.status === 'BELUM') {
+          const deadlineIso = new Date(
+            Date.now() + freshDb.pengaturan.durasi_menit * 60 * 1000
+          ).toISOString();
+          freshDb.sesi[guruStudent.nis] = {
+            nis: guruStudent.nis,
+            ruang: 'GURU-INFORMATIKA',
+            token_sesi: sessionToken,
+            device_id: clientDeviceId,
+            waktu_mulai: nowIso,
+            batas_waktu: deadlineIso,
+            tambahan_menit: 0,
+            status: 'MENGERJAKAN',
+            jumlah_pelanggaran: 0,
+            soal_terakhir: 1,
+            jumlah_terjawab: existingAnsweredCount,
+            waktu_aktif_terakhir: nowIso,
+          };
+        } else {
+          freshDb.sesi[guruStudent.nis].ruang = 'GURU-INFORMATIKA';
+          freshDb.sesi[guruStudent.nis].device_id = clientDeviceId;
+          freshDb.sesi[guruStudent.nis].waktu_aktif_terakhir = nowIso;
+          if (freshDb.sesi[guruStudent.nis].status === 'TERKUNCI') {
+            freshDb.sesi[guruStudent.nis].status = 'MENGERJAKAN';
+          }
+          if (existingAnsweredCount > (freshDb.sesi[guruStudent.nis].jumlah_terjawab || 0)) {
+            freshDb.sesi[guruStudent.nis].jumlah_terjawab = existingAnsweredCount;
+          }
+        }
+
+        saveDatabase(freshDb, true);
+        setDb({ ...freshDb });
+
+        try {
+          localStorage.setItem(
+            ACTIVE_STUDENT_SESSION_KEY,
+            JSON.stringify({ nis: guruStudent.nis, token: sessionToken })
+          );
+        } catch {
+          // ignore
+        }
+
+        void callGasWebApp('studentLogin', {
+          nis: guruStudent.nis,
+          nama: guruStudent.nama,
+          kelas: guruStudent.kelas,
+          token_ruang: freshDb.ruang[0]?.token_ujian || 'INF26A',
+          sesi: freshDb.sesi[guruStudent.nis],
+        });
+
+        setActiveStudent({ student: guruStudent, token: sessionToken });
+        return;
+      }
+
+      // 2. Otherwise verify regular Panel Kontrol Guru & Pengawas credentials (e.g. kikybahsoan / In123123123)
+      const cleanPassHash = simpleSha256Simulation(staffPass);
       void callGasWebApp('staffLogin', { username: cleanUser });
 
       const user = freshDb.pengguna.find(
@@ -268,7 +380,7 @@ export default function App() {
       );
 
       if (!user) {
-        setStaffError('Username atau kata sandi Guru & Pengawas tidak sesuai.');
+        setStaffError('Username atau kata sandi tidak sesuai.');
         setIsLoggingIn(false);
         return;
       }
@@ -511,7 +623,7 @@ export default function App() {
               </button>
             </form>
           ) : (
-            <form onSubmit={handleStaffLogin} className="space-y-4">
+            <form onSubmit={handleStaffLogin} className="space-y-4" autoComplete="off">
               {staffError && (
                 <div className="p-3.5 bg-red-50 border border-red-200 rounded-xl flex items-start gap-2.5 text-xs text-red-800">
                   <AlertCircle className="w-4 h-4 text-red-600 shrink-0 mt-0.5" />
@@ -526,6 +638,7 @@ export default function App() {
                 <input
                   type="text"
                   required
+                  autoComplete="off"
                   value={staffUser}
                   onChange={(e) => setStaffUser(e.target.value)}
                   placeholder="Masukkan username"
@@ -540,6 +653,7 @@ export default function App() {
                 <input
                   type="password"
                   required
+                  autoComplete="new-password"
                   value={staffPass}
                   onChange={(e) => setStaffPass(e.target.value)}
                   placeholder="Masukkan kata sandi"
@@ -553,7 +667,7 @@ export default function App() {
                 className="w-full py-3.5 px-5 bg-slate-900 hover:bg-slate-800 disabled:opacity-60 text-white font-bold text-sm rounded-xl shadow-sm transition-all flex items-center justify-center gap-2 cursor-pointer"
               >
                 <Lock className="w-4 h-4" />
-                {isLoggingIn ? 'Memverifikasi...' : 'Masuk Panel Kontrol'}
+                {isLoggingIn ? 'Memverifikasi...' : 'Masuk'}
               </button>
             </form>
           )}

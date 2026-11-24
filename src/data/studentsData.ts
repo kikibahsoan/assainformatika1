@@ -18,8 +18,58 @@ export const KELAS_10_LIST = [
   '10-KULINER',
 ] as const;
 
-// Complete 330 students extracted verbatim from data_kelas_10_aplikasi.pdf (Pages 1 - 7)
+export const GURU_TRIAL_ACCOUNTS = [
+  {
+    nis: 'GURU01',
+    label: 'Guru 1',
+    nama: 'Guru Informatika 1 (Percobaan Ujian)',
+    username: 'kikybahsoan',
+    password: 'In1231231',
+    altPasswords: ['in1231231', 'guru1', 'in1231'],
+  },
+  {
+    nis: 'GURU02',
+    label: 'Guru 2',
+    nama: 'Guru Informatika 2 (Percobaan Ujian)',
+    username: 'kikybahsoan',
+    password: 'In1231232',
+    altPasswords: ['in1231232', 'guru2', 'in1232'],
+  },
+  {
+    nis: 'GURU03',
+    label: 'Guru 3',
+    nama: 'Guru Informatika 3 (Percobaan Ujian)',
+    username: 'kikybahsoan',
+    password: 'In1231233',
+    altPasswords: ['in1231233', 'guru3', 'in1233'],
+  },
+  {
+    nis: 'GURU04',
+    label: 'Guru 4',
+    nama: 'Guru Informatika 4 (Percobaan Ujian)',
+    username: 'kikybahsoan',
+    password: 'In1231234',
+    altPasswords: ['in1231234', 'guru4', 'in1234'],
+  },
+  {
+    nis: 'GURU05',
+    label: 'Guru 5',
+    nama: 'Guru Informatika 5 (Percobaan Ujian)',
+    username: 'kikybahsoan',
+    password: 'In1231235',
+    altPasswords: ['in1231235', 'guru5', 'in1235'],
+  },
+] as const;
+
+// 5 Login Percobaan Guru Informatika + 330 students extracted verbatim from data_kelas_10_aplikasi.pdf (Pages 1 - 7)
 export const DATA_KELAS_10_SISWA: RawStudentEntry[] = [
+  // ===================== LOGIN PERCOBAAN GURU INFORMATIKA (5 Orang) =====================
+  { nama: 'Guru Informatika 1 (Percobaan Ujian)', kelas: 'GURU-INFORMATIKA' },
+  { nama: 'Guru Informatika 2 (Percobaan Ujian)', kelas: 'GURU-INFORMATIKA' },
+  { nama: 'Guru Informatika 3 (Percobaan Ujian)', kelas: 'GURU-INFORMATIKA' },
+  { nama: 'Guru Informatika 4 (Percobaan Ujian)', kelas: 'GURU-INFORMATIKA' },
+  { nama: 'Guru Informatika 5 (Percobaan Ujian)', kelas: 'GURU-INFORMATIKA' },
+
   // ===================== 10-APHP-1 (33 Siswa) =====================
   { nama: 'ABDUL HULALANGO', kelas: '10-APHP-1' },
   { nama: 'Abdul Kholig Kalengkongan', kelas: '10-APHP-1' },

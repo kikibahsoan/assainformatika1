@@ -61,6 +61,11 @@ function setupSpreadsheet() {
       name: "Siswa",
       headers: ["NIS", "nama", "kelas", "ruang", "password_hash"],
       rows: [
+        ["GURU01", "Guru Informatika 1 (Percobaan Ujian)", "GURU-INFORMATIKA", "GURU-INFORMATIKA", hashPassword("123456")],
+        ["GURU02", "Guru Informatika 2 (Percobaan Ujian)", "GURU-INFORMATIKA", "GURU-INFORMATIKA", hashPassword("123456")],
+        ["GURU03", "Guru Informatika 3 (Percobaan Ujian)", "GURU-INFORMATIKA", "GURU-INFORMATIKA", hashPassword("123456")],
+        ["GURU04", "Guru Informatika 4 (Percobaan Ujian)", "GURU-INFORMATIKA", "GURU-INFORMATIKA", hashPassword("123456")],
+        ["GURU05", "Guru Informatika 5 (Percobaan Ujian)", "GURU-INFORMATIKA", "GURU-INFORMATIKA", hashPassword("123456")],
         ["10001", "ABDUL HULALANGO", "10-APHP-1", "10-APHP-1", hashPassword("123456")],
         ["10002", "Abdul Kholig Kalengkongan", "10-APHP-1", "10-APHP-1", hashPassword("123456")],
         ["10003", "AFRILIA HUSAIN", "10-APHP-1", "10-APHP-1", hashPassword("123456")]
@@ -104,7 +109,12 @@ function setupSpreadsheet() {
       name: "Pengguna",
       headers: ["username", "password_hash", "peran", "ruang_tugas", "nama_lengkap"],
       rows: [
-        ["kikybahsoan", hashPassword("In123123123"), "GURU", "ALL", "Kiky Bahsoan (Guru & Pengawas ASSA Informatika)"]
+        ["kikybahsoan", hashPassword("In123123123"), "GURU", "ALL", "Kiky Bahsoan (Guru & Pengawas ASSA Informatika)"],
+        ["guru1", hashPassword("In123123123"), "GURU", "ALL", "Guru Informatika 1 (Akun Percobaan)"],
+        ["guru2", hashPassword("In123123123"), "GURU", "ALL", "Guru Informatika 2 (Akun Percobaan)"],
+        ["guru3", hashPassword("In123123123"), "GURU", "ALL", "Guru Informatika 3 (Akun Percobaan)"],
+        ["guru4", hashPassword("In123123123"), "GURU", "ALL", "Guru Informatika 4 (Akun Percobaan)"],
+        ["guru5", hashPassword("In123123123"), "GURU", "ALL", "Guru Informatika 5 (Akun Percobaan)"]
       ]
     }
   ];
@@ -124,18 +134,6 @@ function setupSpreadsheet() {
   });
 
   return "Setup 9 Sheet ASSA Informatika SMKN 2 Gorontalo selesai!";
-}
-
-function hashPassword(raw) {
-  var input = String(raw).trim() + "::" + SALT;
-  var digest = Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, input);
-  var hex = "";
-  for (var i = 0; i < digest.length; i++) {
-    var b = (digest[i] < 0 ? digest[i] + 256 : digest[i]).toString(16);
-    if (b.length === 1) hex += "0";
-    hex += b;
-  }
-  return hex;
 }
 
 function getOrCreateSheet(ss, sheetName, defaultHeaders) {
@@ -179,6 +177,10 @@ function doPost(e) {
       result = handleLogViolation(body);
     } else if (action === "submitExam") {
       result = handleSubmitExam(body);
+    } else if (action === "resetStudentExam") {
+      result = handleResetStudentExam(body);
+    } else if (action === "resetAllExams") {
+      result = handleResetAllExams();
     } else if (action === "syncAllToSpreadsheet") {
       result = handleSyncAllToSpreadsheet(body);
     } else if (action === "getRealtimeMonitorData") {
@@ -444,6 +446,66 @@ function handleSubmitExam(body) {
   }
 }
 
+function handleResetStudentExam(body) {
+  var lock = LockService.getScriptLock();
+  if (!lock.tryLock(5000)) return { ok: false, retry: true };
+  try {
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var targetNis = String(body.nis || "").trim();
+    if (!targetNis) return { ok: false, error: "NIS kosong" };
+
+    var targetSheets = [
+      { name: "Sesi", nisColIndex: 0 },
+      { name: "Jawaban", nisColIndex: 0 },
+      { name: "Nilai", nisColIndex: 0 },
+      { name: "Log_Pelanggaran", nisColIndex: 1 }
+    ];
+
+    targetSheets.forEach(function(cfg) {
+      var sheet = ss.getSheetByName(cfg.name);
+      if (sheet && sheet.getLastRow() > 1) {
+        var data = sheet.getDataRange().getValues();
+        for (var r = data.length - 1; r >= 1; r--) {
+          if (String(data[r][cfg.nisColIndex] || "").trim() === targetNis) {
+            sheet.deleteRow(r + 1);
+          }
+        }
+      }
+    });
+
+    return { ok: true, resetNis: targetNis, serverTime: new Date().toISOString() };
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function handleResetAllExams() {
+  var lock = LockService.getScriptLock();
+  if (!lock.tryLock(8000)) return { ok: false, retry: true };
+  try {
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var sheetsToClear = [
+      { name: "Sesi", headers: ["NIS", "ruang", "token_sesi", "waktu_mulai", "batas_waktu", "tambahan_menit", "status", "jumlah_pelanggaran", "soal_terakhir", "waktu_aktif_terakhir"] },
+      { name: "Jawaban", headers: ["NIS", "no_soal", "jawaban", "waktu_simpan"] },
+      { name: "Nilai", headers: ["NIS", "nama", "kelas", "skor_pg", "skor_pgk", "skor_menjodohkan", "skor_isian", "skor_uraian", "nilai_akhir", "status_uraian"] },
+      { name: "Log_Pelanggaran", headers: ["waktu", "NIS", "jenis_pelanggaran", "keterangan"] }
+    ];
+
+    sheetsToClear.forEach(function(cfg) {
+      var sheet = getOrCreateSheet(ss, cfg.name, cfg.headers);
+      if (sheet) {
+        sheet.clearContents();
+        sheet.getRange(1, 1, 1, cfg.headers.length).setValues([cfg.headers]).setFontWeight("bold");
+        sheet.setFrozenRows(1);
+      }
+    });
+
+    return { ok: true, serverTime: new Date().toISOString() };
+  } finally {
+    lock.releaseLock();
+  }
+}
+
 function handleSyncAllToSpreadsheet(body) {
   var lock = LockService.getScriptLock();
   if (!lock.tryLock(8000)) return { ok: false, retry: true, error: "Lock sibuk" };
@@ -455,26 +517,24 @@ function handleSyncAllToSpreadsheet(body) {
     var sesiSheet = getOrCreateSheet(ss, "Sesi", sesiHeaders);
     if (body.sesi && sesiSheet) {
       var sesiKeys = Object.keys(body.sesi);
-      if (sesiKeys.length > 0) {
-        sesiSheet.clearContents();
-        var sesiRows = [sesiHeaders];
-        for (var i = 0; i < sesiKeys.length; i++) {
-          var s = body.sesi[sesiKeys[i]];
-          sesiRows.push([
-            String(s.nis || sesiKeys[i]),
-            String(s.ruang || ""),
-            String(s.token_sesi || ""),
-            String(s.waktu_mulai || ""),
-            String(s.batas_waktu || ""),
-            Number(s.tambahan_menit || 0),
-            String(s.status || "MENGERJAKAN"),
-            Number(s.jumlah_pelanggaran || 0),
-            Number(s.soal_terakhir || 1),
-            String(s.waktu_aktif_terakhir || "")
-          ]);
-        }
-        sesiSheet.getRange(1, 1, sesiRows.length, sesiHeaders.length).setValues(sesiRows);
+      sesiSheet.clearContents();
+      var sesiRows = [sesiHeaders];
+      for (var i = 0; i < sesiKeys.length; i++) {
+        var s = body.sesi[sesiKeys[i]];
+        sesiRows.push([
+          String(s.nis || sesiKeys[i]),
+          String(s.ruang || ""),
+          String(s.token_sesi || ""),
+          String(s.waktu_mulai || ""),
+          String(s.batas_waktu || ""),
+          Number(s.tambahan_menit || 0),
+          String(s.status || "MENGERJAKAN"),
+          Number(s.jumlah_pelanggaran || 0),
+          Number(s.soal_terakhir || 1),
+          String(s.waktu_aktif_terakhir || "")
+        ]);
       }
+      sesiSheet.getRange(1, 1, sesiRows.length, sesiHeaders.length).setValues(sesiRows);
     }
 
     // 2. Sinkron Sheet Jawaban
@@ -499,10 +559,8 @@ function handleSyncAllToSpreadsheet(body) {
           }
         }
       }
-      if (jwbRows.length > 1) {
-        jwbSheet.clearContents();
-        jwbSheet.getRange(1, 1, jwbRows.length, 4).setValues(jwbRows);
-      }
+      jwbSheet.clearContents();
+      jwbSheet.getRange(1, 1, jwbRows.length, 4).setValues(jwbRows);
     }
 
     // 3. Sinkron Sheet Nilai
@@ -510,26 +568,24 @@ function handleSyncAllToSpreadsheet(body) {
     var nilaiSheet = getOrCreateSheet(ss, "Nilai", nilaiHeaders);
     if (body.nilai && nilaiSheet) {
       var nilaiKeys = Object.keys(body.nilai);
-      if (nilaiKeys.length > 0) {
-        nilaiSheet.clearContents();
-        var nilaiRows = [nilaiHeaders];
-        for (var m = 0; m < nilaiKeys.length; m++) {
-          var n = body.nilai[nilaiKeys[m]];
-          nilaiRows.push([
-            String(n.nis || nilaiKeys[m]),
-            String(n.nama || ""),
-            String(n.kelas || ""),
-            Number(n.skor_pg || 0),
-            Number(n.skor_pgk || 0),
-            Number(n.skor_menjodohkan || 0),
-            Number(n.skor_isian || 0),
-            Number(n.skor_uraian || 0),
-            Number(n.nilai_akhir || 0),
-            String(n.status_uraian || "BELUM")
-          ]);
-        }
-        nilaiSheet.getRange(1, 1, nilaiRows.length, nilaiHeaders.length).setValues(nilaiRows);
+      nilaiSheet.clearContents();
+      var nilaiRows = [nilaiHeaders];
+      for (var m = 0; m < nilaiKeys.length; m++) {
+        var n = body.nilai[nilaiKeys[m]];
+        nilaiRows.push([
+          String(n.nis || nilaiKeys[m]),
+          String(n.nama || ""),
+          String(n.kelas || ""),
+          Number(n.skor_pg || 0),
+          Number(n.skor_pgk || 0),
+          Number(n.skor_menjodohkan || 0),
+          Number(n.skor_isian || 0),
+          Number(n.skor_uraian || 0),
+          Number(n.nilai_akhir || 0),
+          String(n.status_uraian || "BELUM")
+        ]);
       }
+      nilaiSheet.getRange(1, 1, nilaiRows.length, nilaiHeaders.length).setValues(nilaiRows);
     }
 
     return { ok: true, syncedAt: new Date().toISOString() };

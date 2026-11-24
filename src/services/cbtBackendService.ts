@@ -285,18 +285,76 @@ export function getShuffledOptionsForQuestion(
 
 // ===================== INITIAL DATABASE (ONLY DATA KELAS 10 PDF & KIKYBAHSOAN) =====================
 
-function buildInitialDatabase(): SpreadsheetDatabase {
+function buildInitialStudentsList(): SiswaRecord[] {
   const defaultPassHash = simpleSha256Simulation('123456');
+  let guruCounter = 1;
+  let siswaCounter = 1;
 
-  // Exclusively populate students from data_kelas_10_aplikasi.pdf
-  const siswa: SiswaRecord[] = DATA_KELAS_10_SISWA.map((entry, idx) => ({
-    nis: String(10001 + idx),
-    nama: entry.nama,
-    kelas: entry.kelas,
-    ruang: entry.kelas,
-    password_hash: defaultPassHash,
-  }));
+  return DATA_KELAS_10_SISWA.map((entry) => {
+    const isGuruTrial = entry.kelas === 'GURU-INFORMATIKA';
+    const nis = isGuruTrial
+      ? `GURU${String(guruCounter++).padStart(2, '0')}`
+      : String(10000 + siswaCounter++);
+    return {
+      nis,
+      nama: entry.nama,
+      kelas: entry.kelas,
+      ruang: entry.kelas,
+      password_hash: defaultPassHash,
+    };
+  });
+}
 
+function buildInitialStaffList(): PenggunaRecord[] {
+  const staffPassHash = simpleSha256Simulation('In123123123');
+  return [
+    {
+      username: 'kikybahsoan',
+      password_hash: staffPassHash,
+      peran: 'GURU',
+      ruang_tugas: 'ALL',
+      nama_lengkap: 'Kiky Bahsoan (Guru & Pengawas ASSA Informatika)',
+    },
+    {
+      username: 'guru1',
+      password_hash: staffPassHash,
+      peran: 'GURU',
+      ruang_tugas: 'ALL',
+      nama_lengkap: 'Guru Informatika 1 (Akun Percobaan)',
+    },
+    {
+      username: 'guru2',
+      password_hash: staffPassHash,
+      peran: 'GURU',
+      ruang_tugas: 'ALL',
+      nama_lengkap: 'Guru Informatika 2 (Akun Percobaan)',
+    },
+    {
+      username: 'guru3',
+      password_hash: staffPassHash,
+      peran: 'GURU',
+      ruang_tugas: 'ALL',
+      nama_lengkap: 'Guru Informatika 3 (Akun Percobaan)',
+    },
+    {
+      username: 'guru4',
+      password_hash: staffPassHash,
+      peran: 'GURU',
+      ruang_tugas: 'ALL',
+      nama_lengkap: 'Guru Informatika 4 (Akun Percobaan)',
+    },
+    {
+      username: 'guru5',
+      password_hash: staffPassHash,
+      peran: 'GURU',
+      ruang_tugas: 'ALL',
+      nama_lengkap: 'Guru Informatika 5 (Akun Percobaan)',
+    },
+  ];
+}
+
+function buildInitialDatabase(): SpreadsheetDatabase {
+  const siswa = buildInitialStudentsList();
   const startIso = new Date().toISOString();
 
   return {
@@ -330,15 +388,7 @@ function buildInitialDatabase(): SpreadsheetDatabase {
     jawaban: {},
     log_pelanggaran: [],
     nilai: {},
-    pengguna: [
-      {
-        username: 'kikybahsoan',
-        password_hash: simpleSha256Simulation('In123123123'),
-        peran: 'GURU',
-        ruang_tugas: 'ALL',
-        nama_lengkap: 'Kiky Bahsoan (Guru & Pengawas ASSA Informatika)',
-      },
-    ],
+    pengguna: buildInitialStaffList(),
   };
 }
 
@@ -539,18 +589,65 @@ try {
   broadcastChannel = null;
 }
 
+export function markStudentResetTimestamp(nis: string, tsMs = Date.now()): void {
+  try {
+    localStorage.setItem(`ASSA_RESET_TS_${nis}`, String(tsMs));
+  } catch {
+    // ignore
+  }
+}
+
+export function clearStudentResetTimestamp(nis: string): void {
+  try {
+    localStorage.removeItem(`ASSA_RESET_TS_${nis}`);
+  } catch {
+    // ignore
+  }
+}
+
+export function getStudentResetTimestamp(nis: string): number {
+  try {
+    const val = localStorage.getItem(`ASSA_RESET_TS_${nis}`);
+    return val ? Number(val) || 0 : 0;
+  } catch {
+    return 0;
+  }
+}
+
 export function loadDatabase(): SpreadsheetDatabase {
   try {
     const raw = localStorage.getItem(DB_STORAGE_KEY);
     if (raw) {
       const parsed = JSON.parse(raw) as SpreadsheetDatabase;
       if (parsed && parsed.bank_soal && parsed.bank_soal.length > 0) {
+        let needsSave = false;
+
         if (
           !parsed.pengaturan.gas_webapp_url ||
           parsed.pengaturan.gas_webapp_url.includes('AKfycbzEN_p5NQvBZmwGwuHuzf_MvSjfvDoQ2Q5mwkm32FJxiMvuOnYx4Hjj4lawiFKEoNhI') ||
           parsed.pengaturan.gas_webapp_url.includes('AKfycbxU21xslWFy3JQLX7TqMM0EDeBc5K6xnIFWG76sAdf9zWZMx8P-50kRYka0OBid7muh')
         ) {
           parsed.pengaturan.gas_webapp_url = DEFAULT_GAS_WEBAPP_URL;
+          needsSave = true;
+        }
+
+        // Ensure 5 Login Percobaan Guru Informatika (GURU01..GURU05) & 330 Siswa exist in cached DB
+        const hasGuru01 = parsed.siswa?.some((s) => s.nis === 'GURU01');
+        if (!hasGuru01) {
+          const freshStudents = buildInitialStudentsList();
+          const simStudents = (parsed.siswa || []).filter((s) => s.nis.startsWith('SIM'));
+          parsed.siswa = [...freshStudents, ...simStudents];
+          needsSave = true;
+        }
+
+        // Ensure 5 staff trial accounts (guru1..guru5) exist in parsed.pengguna
+        const hasStaffGuru1 = parsed.pengguna?.some((u) => u.username === 'guru1');
+        if (!hasStaffGuru1) {
+          parsed.pengguna = buildInitialStaffList();
+          needsSave = true;
+        }
+
+        if (needsSave) {
           try {
             localStorage.setItem(DB_STORAGE_KEY, JSON.stringify(parsed));
           } catch {
@@ -723,8 +820,21 @@ export function mergeRemoteMonitorData(
   remoteSesiList.forEach((rSesi: any) => {
     const nis = String(rSesi?.nis || rSesi?.NIS || '').trim();
     if (!nis) return;
-    const localSesi = db.sesi[nis];
+
+    // Skip reset sessions or sessions older than reset timestamp
+    const rStatus = String(rSesi?.status || '').toUpperCase();
+    const rToken = String(rSesi?.token_sesi || '');
+    if (rStatus === 'BELUM' || rStatus === 'RESET' || rToken === 'RESET') {
+      return;
+    }
+
+    const resetTs = getStudentResetTimestamp(nis);
     const remoteTime = new Date(rSesi.waktu_aktif_terakhir || 0).getTime() || 0;
+    if (resetTs > 0 && remoteTime <= resetTs + 1500) {
+      return;
+    }
+
+    const localSesi = db.sesi[nis];
     const localTime = new Date(localSesi?.waktu_aktif_terakhir || 0).getTime() || 0;
     const remoteProgress = Number(rSesi.jumlah_terjawab || 0);
     const localProgress = Number(localSesi?.jumlah_terjawab || 0);
@@ -776,7 +886,14 @@ export function mergeRemoteMonitorData(
       const waktu = String(
         Array.isArray(row) ? row[3] : row?.waktu_simpan || new Date().toISOString()
       );
-      if (!nis || !noSoal) return;
+      if (!nis || !noSoal || jwb.trim() === '') return;
+
+      const resetTs = getStudentResetTimestamp(nis);
+      const ansTime = new Date(waktu || 0).getTime() || 0;
+      if (resetTs > 0 && ansTime <= resetTs + 1500) {
+        return;
+      }
+
       if (!db.jawaban[nis]) db.jawaban[nis] = {};
       const existing = db.jawaban[nis][noSoal];
       if (!existing || existing.jawaban !== jwb) {
@@ -794,12 +911,20 @@ export function mergeRemoteMonitorData(
     Object.entries(remote.jawaban).forEach(([nisKey, perStudent]: [string, any]) => {
       const nis = String(nisKey).trim();
       if (!nis || !perStudent || typeof perStudent !== 'object') return;
-      if (!db.jawaban[nis]) db.jawaban[nis] = {};
+      const resetTs = getStudentResetTimestamp(nis);
+
       Object.entries(perStudent).forEach(([noStr, item]: [string, any]) => {
         const noSoal = Number(item?.no_soal || noStr);
         const jwb = String(typeof item === 'object' ? item?.jawaban ?? '' : item ?? '');
         const waktu = String(item?.waktu_simpan || new Date().toISOString());
-        if (!noSoal) return;
+        if (!noSoal || jwb.trim() === '') return;
+
+        const ansTime = new Date(waktu || 0).getTime() || 0;
+        if (resetTs > 0 && ansTime <= resetTs + 1500) {
+          return;
+        }
+
+        if (!db.jawaban[nis]) db.jawaban[nis] = {};
         const existing = db.jawaban[nis][noSoal];
         if (!existing || existing.jawaban !== jwb) {
           db.jawaban[nis][noSoal] = {
@@ -865,6 +990,13 @@ export function mergeRemoteMonitorData(
       ) as LogPelanggaranRecord['jenis_pelanggaran'];
       const ket = String(Array.isArray(row) ? row[3] : row?.keterangan || '');
       if (!nis || !waktu) return;
+
+      const resetTs = getStudentResetTimestamp(nis);
+      const logTime = new Date(waktu || 0).getTime() || 0;
+      if (resetTs > 0 && logTime <= resetTs + 1500) {
+        return;
+      }
+
       const exists = db.log_pelanggaran.some(
         (l) => l.nis === nis && l.waktu === waktu && l.jenis_pelanggaran === jenis
       );
@@ -1028,6 +1160,139 @@ export async function syncAllWithGoogleSpreadsheet(): Promise<SpreadsheetSyncRes
       scoresCount: scoresList.length,
       message: `Gagal menghubungi URL Google Apps Script pada ${nowTime}. Data tetap aman di perangkat.`,
     };
+  }
+}
+
+export async function resetStudentExamData(nis: string): Promise<void> {
+  const nowMs = Date.now();
+  const nowIso = new Date(nowMs).toISOString();
+  markStudentResetTimestamp(nis, nowMs);
+
+  try {
+    localStorage.removeItem(`ASSA_LOCAL_ANS_${nis}`);
+  } catch {
+    // ignore
+  }
+
+  const db = loadDatabase();
+  const student = db.siswa.find((s) => s.nis === nis);
+  const previousAnswers = db.jawaban[nis] || {};
+  const previousQuestionKeys = Object.keys(previousAnswers);
+
+  delete db.sesi[nis];
+  delete db.jawaban[nis];
+  delete db.nilai[nis];
+  db.log_pelanggaran = db.log_pelanggaran.filter((l) => l.nis !== nis);
+  saveDatabase(db, true);
+
+  // Build empty answer map to overwrite existing rows in Sheet Jawaban on older deployed Code.gs
+  const emptyAnswersMap: Record<string, string> = {};
+  if (previousQuestionKeys.length > 0) {
+    previousQuestionKeys.forEach((k) => {
+      emptyAnswersMap[k] = '';
+    });
+  } else {
+    for (let i = 1; i <= 40; i++) {
+      emptyAnswersMap[String(i)] = '';
+    }
+  }
+
+  const remainingSesi = Object.values(db.sesi);
+  const remainingNilai = Object.values(db.nilai);
+  const remainingAnswersCount = Object.values(db.jawaban).reduce(
+    (acc, ansMap) =>
+      acc +
+      Object.values(ansMap).filter((a) => a.jawaban && String(a.jawaban).trim() !== '').length,
+    0
+  );
+
+  try {
+    const tasks: Promise<any>[] = [
+      // 1. Direct reset endpoint (supported by updated Code.gs)
+      callGasWebApp('resetStudentExam', { nis }),
+      // 2. Compatible clear on existing deployed Code.gs
+      callGasWebApp('saveAnswerBatch', {
+        nis,
+        kelas: student?.kelas || '',
+        soal_terakhir: 1,
+        jumlah_terjawab: 0,
+        answers: emptyAnswersMap,
+      }),
+      callGasWebApp('studentLogin', {
+        nis,
+        nama: student?.nama || '',
+        kelas: student?.kelas || '',
+        token_ruang: 'RESET',
+        sesi: {
+          nis,
+          ruang: student?.kelas || '',
+          token_sesi: 'RESET',
+          waktu_mulai: '',
+          batas_waktu: '',
+          tambahan_menit: 0,
+          status: 'BELUM',
+          jumlah_pelanggaran: 0,
+          soal_terakhir: 1,
+          waktu_aktif_terakhir: nowIso,
+        },
+      }),
+    ];
+
+    if (remainingSesi.length === 0 && remainingAnswersCount === 0) {
+      // If no other students have active answers, re-init the 9 sheets so Sesi, Jawaban, Nilai, Log_Pelanggaran are 100% empty
+      tasks.push(callGasWebApp('setupSpreadsheet', {}));
+    } else {
+      tasks.push(
+        callGasWebApp('syncAllToSpreadsheet', {
+          siswa_count: db.siswa.length,
+          sesi: remainingSesi,
+          jawaban: db.jawaban,
+          log_pelanggaran: db.log_pelanggaran,
+          nilai: remainingNilai,
+        })
+      );
+    }
+
+    await Promise.allSettled(tasks);
+  } catch {
+    // ignore network error
+  }
+}
+
+export async function resetAllExamData(): Promise<void> {
+  const nowMs = Date.now();
+  const db = loadDatabase();
+
+  try {
+    const keysToRemove: string[] = [];
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      if (k && k.startsWith('ASSA_LOCAL_ANS_')) {
+        keysToRemove.push(k);
+      }
+    }
+    keysToRemove.forEach((k) => localStorage.removeItem(k));
+  } catch {
+    // ignore
+  }
+
+  db.siswa.forEach((s) => {
+    markStudentResetTimestamp(s.nis, nowMs);
+  });
+
+  db.sesi = {};
+  db.jawaban = {};
+  db.nilai = {};
+  db.log_pelanggaran = [];
+  saveDatabase(db, true);
+
+  try {
+    await Promise.allSettled([
+      callGasWebApp('resetAllExams', {}),
+      callGasWebApp('setupSpreadsheet', {}),
+    ]);
+  } catch {
+    // ignore
   }
 }
 

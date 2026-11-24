@@ -20,6 +20,7 @@ import { QuestionClient } from '../data/questionsData';
 import {
   calculateStudentScoreServerSide,
   callGasWebApp,
+  clearStudentResetTimestamp,
   executeWithRetryAndJitter,
   getPublicQuestionsFromServer,
   getQuestionsShuffledForStudent,
@@ -372,7 +373,7 @@ export const StudentExamView: React.FC<StudentExamViewProps> = ({
     };
   }, [session.status]);
 
-  // Real-time subscription to Teacher Panel actions (extra time, force submit, room status) + 3s heartbeat
+  // Real-time subscription to Teacher Panel actions (extra time, force submit, reset answers, room status) + 3s heartbeat
   useEffect(() => {
     const unsubscribe = subscribeToRealtimeDatabase((freshDb) => {
       setDbState(freshDb);
@@ -385,7 +386,39 @@ export const StudentExamView: React.FC<StudentExamViewProps> = ({
         setSession({ ...srvSesi });
         if (srvSesi.status === 'SELESAI' && freshDb.nilai[student.nis]) {
           setSubmittedResult(freshDb.nilai[student.nis]);
+        } else if (srvSesi.status === 'MENGERJAKAN') {
+          setSubmittedResult(null);
         }
+      } else if (!freshDb.jawaban[student.nis]) {
+        // Teacher clicked Reset Jawaban & Ulangi while student had exam or result screen open:
+        // Immediately wipe local state and allow repeating the exam from 0/40 with a fresh timer
+        answersRef.current = {};
+        setAnswers({});
+        setUnsyncedSet(new Set());
+        setSubmittedResult(null);
+        setShowConfirmSubmit(false);
+        setWarningModal(null);
+        setCurrentIdx(0);
+        const nowIso = new Date().toISOString();
+        const deadlineIso = new Date(
+          Date.now() + freshDb.pengaturan.durasi_menit * 60 * 1000
+        ).toISOString();
+        const freshSession: SesiRecord = {
+          nis: student.nis,
+          ruang: student.kelas,
+          token_sesi: `SES-${student.nis}-${Date.now().toString(36)}`,
+          device_id: 'BROWSER-CLIENT',
+          waktu_mulai: nowIso,
+          batas_waktu: deadlineIso,
+          tambahan_menit: 0,
+          status: 'MENGERJAKAN',
+          jumlah_pelanggaran: 0,
+          soal_terakhir: 1,
+          jumlah_terjawab: 0,
+          waktu_aktif_terakhir: nowIso,
+        };
+        setSession(freshSession);
+        setRemainingSeconds(freshDb.pengaturan.durasi_menit * 60);
       }
     });
 
@@ -407,7 +440,7 @@ export const StudentExamView: React.FC<StudentExamViewProps> = ({
       unsubscribe();
       clearInterval(heartbeatInterval);
     };
-  }, [student.nis, student.ruang]);
+  }, [student.nis, student.kelas, student.ruang]);
 
   // 4. Record Violation Function (Anti-Cheat Layer: Never locks student, always reports to Teacher Panel)
   const recordViolation = useCallback(
@@ -531,30 +564,66 @@ export const StudentExamView: React.FC<StudentExamViewProps> = ({
     };
   }, [roomStarted, session.status, recordViolation]);
 
-  // 6. Final Submit Handler
-  const handleFinalSubmit = useCallback(async () => {
-    await flushAnswerBatchToServer(true);
-    const db = loadDatabase();
-    if (db.sesi[student.nis]) {
-      db.sesi[student.nis].status = 'SELESAI';
-      db.sesi[student.nis].waktu_aktif_terakhir = new Date().toISOString();
-    }
+  const isQuestionAnswered = useCallback(
+    (q: QuestionClient, rawAnswer: string | undefined): boolean => {
+      if (!rawAnswer || String(rawAnswer).trim() === '') return false;
+      if (q.tipe === 'MENJODOHKAN') {
+        try {
+          const parsed = JSON.parse(rawAnswer) as Record<string, string>;
+          const filledKeys = Object.entries(parsed).filter(
+            ([, val]) => String(val || '').trim() !== ''
+          );
+          if (q.menjodohkan_kiri && q.menjodohkan_kiri.length > 0) {
+            return filledKeys.length >= q.menjodohkan_kiri.length;
+          }
+          return filledKeys.length > 0;
+        } catch {
+          return false;
+        }
+      }
+      return true;
+    },
+    []
+  );
 
-    // Perform server-side auto-grading immediately upon submission
-    const nilaiRec = calculateStudentScoreServerSide(db, student.nis);
-    db.nilai[student.nis] = nilaiRec;
-    saveDatabase(db);
+  // 6. Final Submit Handler (strictly blocks manual submission if any question is unanswered)
+  const handleFinalSubmit = useCallback(
+    async (isAutoTimeout = false) => {
+      if (!isAutoTimeout) {
+        const currentAnsMap = answersRef.current;
+        const hasUnanswered =
+          questions.length === 0 ||
+          questions.some((q) => !isQuestionAnswered(q, currentAnsMap[q.no]?.jawaban));
+        if (hasUnanswered) {
+          setShowConfirmSubmit(true);
+          return;
+        }
+      }
 
-    // Send final submission & score summary to embedded Google Apps Script Web App
-    await callGasWebApp('submitExam', {
-      nis: student.nis,
-      nilai: nilaiRec,
-    });
+      await flushAnswerBatchToServer(true);
+      const db = loadDatabase();
+      if (db.sesi[student.nis]) {
+        db.sesi[student.nis].status = 'SELESAI';
+        db.sesi[student.nis].waktu_aktif_terakhir = new Date().toISOString();
+      }
 
-    setSession((prev) => ({ ...prev, status: 'SELESAI' }));
-    setSubmittedResult(nilaiRec);
-    setShowConfirmSubmit(false);
-  }, [flushAnswerBatchToServer, student.nis]);
+      // Perform server-side auto-grading immediately upon submission
+      const nilaiRec = calculateStudentScoreServerSide(db, student.nis);
+      db.nilai[student.nis] = nilaiRec;
+      saveDatabase(db);
+
+      // Send final submission & score summary to embedded Google Apps Script Web App
+      await callGasWebApp('submitExam', {
+        nis: student.nis,
+        nilai: nilaiRec,
+      });
+
+      setSession((prev) => ({ ...prev, status: 'SELESAI' }));
+      setSubmittedResult(nilaiRec);
+      setShowConfirmSubmit(false);
+    },
+    [flushAnswerBatchToServer, student.nis, questions, isQuestionAnswered]
+  );
 
   // 7. Server-Side Countdown Timer
   useEffect(() => {
@@ -568,7 +637,7 @@ export const StudentExamView: React.FC<StudentExamViewProps> = ({
 
       if (secs <= 0) {
         clearInterval(timer);
-        handleFinalSubmit();
+        void handleFinalSubmit(true);
       }
     }, 1000);
 
@@ -577,6 +646,7 @@ export const StudentExamView: React.FC<StudentExamViewProps> = ({
 
   // Save answer immediately to localStorage AND shared realtime database so Teacher Panel updates in 0ms
   const updateAnswer = (noSoal: number, newJawaban: string, toggleRagu?: boolean) => {
+    clearStudentResetTimestamp(student.nis);
     const existing = answersRef.current[noSoal] || { jawaban: '', ragu_ragu: false };
     const nextRagu = toggleRagu !== undefined ? toggleRagu : existing.ragu_ragu;
     const updatedMap = {
@@ -617,6 +687,21 @@ export const StudentExamView: React.FC<StudentExamViewProps> = ({
       db.sesi[student.nis].jumlah_terjawab = liveAnsweredCount;
       db.sesi[student.nis].soal_terakhir = noSoal;
       db.sesi[student.nis].waktu_aktif_terakhir = nowIso;
+    } else {
+      db.sesi[student.nis] = {
+        nis: student.nis,
+        ruang: student.kelas,
+        token_sesi: `SES-${student.nis}-${Date.now().toString(36)}`,
+        device_id: 'BROWSER-CLIENT',
+        waktu_mulai: nowIso,
+        batas_waktu: new Date(Date.now() + db.pengaturan.durasi_menit * 60000).toISOString(),
+        tambahan_menit: 0,
+        status: 'MENGERJAKAN',
+        jumlah_pelanggaran: 0,
+        soal_terakhir: noSoal,
+        jumlah_terjawab: liveAnsweredCount,
+        waktu_aktif_terakhir: nowIso,
+      };
     }
 
     // Keep live provisional score updated for real-time monitoring in Teacher Panel
@@ -936,22 +1021,13 @@ export const StudentExamView: React.FC<StudentExamViewProps> = ({
     }
   }
 
-  const answeredCount = questions.filter((q) => {
-    const a = answers[q.no]?.jawaban;
-    if (!a || String(a).trim() === '') return false;
-    if (q.tipe === 'MENJODOHKAN') {
-      try {
-        const parsed = JSON.parse(a);
-        return Object.keys(parsed).length > 0;
-      } catch {
-        return false;
-      }
-    }
-    return true;
-  }).length;
+  const unansweredItems = questions
+    .map((q, idx) => ({ q, idx, displayNo: idx + 1 }))
+    .filter(({ q }) => !isQuestionAnswered(q, answers[q.no]?.jawaban));
 
+  const answeredCount = questions.length - unansweredItems.length;
   const doubtfulCount = questions.filter((q) => answers[q.no]?.ragu_ragu).length;
-  const unansweredCount = questions.length - answeredCount;
+  const unansweredCount = unansweredItems.length;
 
   const getTypeLabel = (tipe: QuestionClient['tipe']) => {
     switch (tipe) {
@@ -1456,7 +1532,7 @@ export const StudentExamView: React.FC<StudentExamViewProps> = ({
             <div className="grid grid-cols-5 sm:grid-cols-8 lg:grid-cols-5 gap-2">
               {questions.map((q, idx) => {
                 const ans = answers[q.no];
-                const hasAnswer = Boolean(ans?.jawaban && String(ans.jawaban).trim() !== '');
+                const hasAnswer = isQuestionAnswered(q, ans?.jawaban);
                 const isRagu = Boolean(ans?.ragu_ragu);
                 const isCurrent = idx === currentIdx;
 
@@ -1517,7 +1593,7 @@ export const StudentExamView: React.FC<StudentExamViewProps> = ({
               <div className="grid grid-cols-5 gap-2">
                 {questions.map((q, idx) => {
                   const ans = answers[q.no];
-                  const hasAnswer = Boolean(ans?.jawaban && String(ans.jawaban).trim() !== '');
+                  const hasAnswer = isQuestionAnswered(q, ans?.jawaban);
                   const isRagu = Boolean(ans?.ragu_ragu);
                   return (
                     <button
@@ -1594,40 +1670,70 @@ export const StudentExamView: React.FC<StudentExamViewProps> = ({
               </div>
             </div>
 
-            {unansweredCount > 0 && (
-              <div className="mb-4 p-3.5 bg-amber-50 border border-amber-200 rounded-xl text-xs text-amber-900">
-                <strong>Perhatian:</strong> Masih ada <strong>{unansweredCount} soal</strong> yang
-                belum Anda jawab (Urutan:{' '}
-                {questions
-                  .map((q, i) => ({ i: i + 1, ans: answers[q.no]?.jawaban }))
-                  .filter((x) => !x.ans || String(x.ans).trim() === '')
-                  .slice(0, 12)
-                  .map((x) => x.i)
-                  .join(', ')}
-                {unansweredCount > 12 ? ', dst.' : ''}).
+            {unansweredCount > 0 ? (
+              <div className="mb-5 p-4 bg-red-50 border border-red-200 rounded-xl text-xs text-red-900 space-y-2.5">
+                <div className="flex items-start gap-2">
+                  <AlertTriangle className="w-4 h-4 text-red-600 shrink-0 mt-0.5" />
+                  <div>
+                    <strong className="block text-sm text-red-800">
+                      Ujian Belum Dapat Diakhiri!
+                    </strong>
+                    <span>
+                      Masih ada <strong>{unansweredCount} soal</strong> yang belum terjawab lengkap.
+                      Semua soal wajib dijawab sebelum Anda dapat mengumpulkan ujian. Klik nomor di
+                      bawah untuk langsung menuju soal yang belum terjawab:
+                    </span>
+                  </div>
+                </div>
+                <div className="flex flex-wrap gap-1.5 pt-1 max-h-32 overflow-y-auto">
+                  {unansweredItems.map((item) => (
+                    <button
+                      key={item.q.id}
+                      type="button"
+                      onClick={() => {
+                        setShowConfirmSubmit(false);
+                        goToQuestionIndex(item.idx);
+                      }}
+                      className="px-2.5 py-1 rounded-lg bg-white hover:bg-red-100 border border-red-300 text-red-800 font-mono font-bold text-xs cursor-pointer transition-colors"
+                    >
+                      Soal #{item.displayNo}
+                    </button>
+                  ))}
+                </div>
               </div>
+            ) : (
+              <p className="text-xs text-slate-600 leading-relaxed mb-6">
+                Semua <strong>{questions.length} soal</strong> telah terjawab. Setelah Anda menekan
+                tombol <strong>Kumpulkan Sekarang</strong>, seluruh jawaban akan dikirim final ke
+                server dan Anda tidak dapat kembali mengerjakan soal.
+              </p>
             )}
-
-            <p className="text-xs text-slate-600 leading-relaxed mb-6">
-              Setelah Anda menekan tombol <strong>Kumpulkan Sekarang</strong>, seluruh jawaban akan
-              dikirim final ke server dan Anda tidak dapat kembali mengerjakan soal.
-            </p>
 
             <div className="flex items-center justify-end gap-3">
               <button
                 type="button"
                 onClick={() => setShowConfirmSubmit(false)}
-                className="px-4 py-2.5 rounded-xl border border-slate-300 text-slate-700 font-semibold text-sm hover:bg-slate-50"
+                className="px-4 py-2.5 rounded-xl border border-slate-300 text-slate-700 font-semibold text-sm hover:bg-slate-50 cursor-pointer"
               >
                 Kembali Periksa Soal
               </button>
               <button
                 type="button"
-                onClick={handleFinalSubmit}
-                className="px-5 py-2.5 rounded-xl bg-emerald-700 hover:bg-emerald-800 text-white font-semibold text-sm flex items-center gap-2"
+                disabled={unansweredCount > 0}
+                onClick={() => {
+                  if (unansweredCount > 0) return;
+                  void handleFinalSubmit(false);
+                }}
+                className={`px-5 py-2.5 rounded-xl font-semibold text-sm flex items-center gap-2 transition-colors ${
+                  unansweredCount > 0
+                    ? 'bg-slate-200 text-slate-500 cursor-not-allowed'
+                    : 'bg-emerald-700 hover:bg-emerald-800 text-white cursor-pointer'
+                }`}
               >
                 <Send className="w-4 h-4" />
-                Kumpulkan Sekarang
+                {unansweredCount > 0
+                  ? `Belum Lengkap (${unansweredCount} Soal Kosong)`
+                  : 'Kumpulkan Sekarang'}
               </button>
             </div>
           </div>
