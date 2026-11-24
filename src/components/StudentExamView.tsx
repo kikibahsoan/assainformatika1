@@ -268,16 +268,23 @@ export const StudentExamView: React.FC<StudentExamViewProps> = ({
             }
           });
 
-          // Send batch to embedded Google Apps Script Web App
-          await callGasWebApp('saveAnswerBatch', {
-            nis: student.nis,
-            answers: batchPayload,
-          });
-
           // Update session progress summary in cached Sesi table
           const answeredCount = Object.values(currentAns).filter(
             (a) => a.jawaban && String(a.jawaban).trim() !== ''
           ).length;
+
+          const latestSoalNo =
+            db.sesi[student.nis]?.soal_terakhir ||
+            (keysToFlush.length > 0 ? keysToFlush[keysToFlush.length - 1] : 1);
+
+          // Send batch + live session progress to embedded Google Apps Script Web App
+          await callGasWebApp('saveAnswerBatch', {
+            nis: student.nis,
+            kelas: student.kelas,
+            soal_terakhir: latestSoalNo,
+            jumlah_terjawab: answeredCount,
+            answers: batchPayload,
+          });
 
           if (db.sesi[student.nis]) {
             db.sesi[student.nis].jumlah_terjawab = answeredCount;
@@ -299,7 +306,7 @@ export const StudentExamView: React.FC<StudentExamViewProps> = ({
         setSyncStatus('RETRYING');
       }
     },
-    [student.nis, unsyncedSet]
+    [student.nis, student.kelas, unsyncedSet]
   );
 
   // Trigger debounced real-time sync to Google Apps Script (1.2s after answer change) or immediately when >= 5 answers queued
@@ -314,6 +321,56 @@ export const StudentExamView: React.FC<StudentExamViewProps> = ({
     }, 1200);
     return () => clearTimeout(debounceTimer);
   }, [unsyncedSet, flushAnswerBatchToServer]);
+
+  // Automatic Fullscreen on Mobile (HP) & Desktop upon login / resume / first touch interaction
+  useEffect(() => {
+    if (session.status === 'SELESAI') return;
+
+    const tryEnterFullscreen = () => {
+      try {
+        const docEl = document.documentElement as HTMLElement & {
+          webkitRequestFullscreen?: () => Promise<void>;
+          msRequestFullscreen?: () => Promise<void>;
+        };
+        if (!document.fullscreenElement) {
+          if (docEl.requestFullscreen) {
+            void docEl
+              .requestFullscreen()
+              .then(() => setIsFullscreen(true))
+              .catch(() => {});
+          } else if (docEl.webkitRequestFullscreen) {
+            void docEl.webkitRequestFullscreen();
+            setIsFullscreen(true);
+          } else if (docEl.msRequestFullscreen) {
+            void docEl.msRequestFullscreen();
+            setIsFullscreen(true);
+          }
+        } else {
+          setIsFullscreen(true);
+        }
+      } catch {
+        // ignore if blocked by browser
+      }
+    };
+
+    // Attempt immediately on mount (works when transitioned directly from Login click)
+    tryEnterFullscreen();
+
+    // Also attach to first touch/click on mobile HP in case the page was auto-resumed or reloaded
+    const handleFirstInteraction = () => {
+      if (!document.fullscreenElement) {
+        tryEnterFullscreen();
+      }
+    };
+
+    window.addEventListener('touchstart', handleFirstInteraction, { passive: true, once: true });
+    window.addEventListener('click', handleFirstInteraction, { passive: true, once: true });
+
+    return () => {
+      window.removeEventListener('touchstart', handleFirstInteraction);
+      window.removeEventListener('click', handleFirstInteraction);
+    };
+  }, [session.status]);
 
   // Real-time subscription to Teacher Panel actions (extra time, force submit, room status) + 3s heartbeat
   useEffect(() => {

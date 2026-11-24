@@ -252,6 +252,37 @@ function handleSaveAnswerBatch(body) {
       sheet.getRange(startRow, 1, rowsToAppend.length, 4).setValues(rowsToAppend);
     }
 
+    // Update Sesi sheet soal_terakhir & waktu_aktif_terakhir in real-time
+    var sesiSheet = ss.getSheetByName("Sesi");
+    if (sesiSheet) {
+      var sData = sesiSheet.getDataRange().getValues();
+      var foundRow = -1;
+      for (var r = 1; r < sData.length; r++) {
+        if (String(sData[r][0]).trim() === nis) {
+          foundRow = r + 1;
+          break;
+        }
+      }
+      var lastNo = Number(body.soal_terakhir || (keys.length > 0 ? keys[keys.length - 1] : 1));
+      if (foundRow > 1) {
+        sesiSheet.getRange(foundRow, 9).setValue(lastNo);
+        sesiSheet.getRange(foundRow, 10).setValue(nowIso);
+      } else {
+        sesiSheet.getRange(sesiSheet.getLastRow() + 1, 1, 1, 10).setValues([[
+          nis,
+          String(body.kelas || ""),
+          "SES-" + nis,
+          nowIso,
+          new Date(Date.now() + 90 * 60000).toISOString(),
+          0,
+          "MENGERJAKAN",
+          0,
+          lastNo,
+          nowIso
+        ]]);
+      }
+    }
+
     return { ok: true, savedCount: rowsToAppend.length, serverTime: nowIso };
   } finally {
     lock.releaseLock();
@@ -262,9 +293,26 @@ function handleLogViolation(body) {
   var lock = LockService.getScriptLock();
   if (!lock.tryLock(5000)) return { ok: false, retry: true };
   try {
-    var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName("Log_Pelanggaran");
-    var row = [new Date().toISOString(), String(body.nis || ""), String(body.jenis || ""), String(body.keterangan || "")];
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var sheet = ss.getSheetByName("Log_Pelanggaran");
+    var nowIso = new Date().toISOString();
+    var nis = String(body.nis || "");
+    var row = [nowIso, nis, String(body.jenis || ""), String(body.keterangan || "")];
     sheet.getRange(sheet.getLastRow() + 1, 1, 1, 4).setValues([row]);
+
+    // Update jumlah_pelanggaran in Sesi sheet
+    var sesiSheet = ss.getSheetByName("Sesi");
+    if (sesiSheet && nis) {
+      var sData = sesiSheet.getDataRange().getValues();
+      for (var r = 1; r < sData.length; r++) {
+        if (String(sData[r][0]).trim() === nis) {
+          var nextCount = Number(body.jumlah_pelanggaran || (Number(sData[r][7] || 0) + 1));
+          sesiSheet.getRange(r + 1, 8).setValue(nextCount);
+          sesiSheet.getRange(r + 1, 10).setValue(nowIso);
+          break;
+        }
+      }
+    }
     return { ok: true };
   } finally {
     lock.releaseLock();
@@ -275,7 +323,8 @@ function handleSubmitExam(body) {
   var lock = LockService.getScriptLock();
   if (!lock.tryLock(5000)) return { ok: false, retry: true };
   try {
-    var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName("Nilai");
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var sheet = ss.getSheetByName("Nilai");
     if (body.nilai) {
       var n = body.nilai;
       var row = [
@@ -286,6 +335,17 @@ function handleSubmitExam(body) {
         String(n.status_uraian || "BELUM")
       ];
       sheet.getRange(sheet.getLastRow() + 1, 1, 1, 10).setValues([row]);
+    }
+    var sesiSheet = ss.getSheetByName("Sesi");
+    if (sesiSheet && body.nis) {
+      var sData = sesiSheet.getDataRange().getValues();
+      for (var r = 1; r < sData.length; r++) {
+        if (String(sData[r][0]).trim() === String(body.nis).trim()) {
+          sesiSheet.getRange(r + 1, 7).setValue("SELESAI");
+          sesiSheet.getRange(r + 1, 10).setValue(new Date().toISOString());
+          break;
+        }
+      }
     }
     return { ok: true };
   } finally {
@@ -394,8 +454,37 @@ function handleSyncAllToSpreadsheet(body) {
 
 function handleGetRealtimeMonitorData() {
   var ss = SpreadsheetApp.getActiveSpreadsheet();
-  var result = { ok: true, sesi: {}, nilai: {}, serverTime: new Date().toISOString() };
+  var result = {
+    ok: true,
+    sesi: [],
+    jawaban: [],
+    log_pelanggaran: [],
+    nilai: [],
+    serverTime: new Date().toISOString()
+  };
 
+  // 1. Ambil Jawaban terlebih dahulu untuk menghitung jumlah_terjawab per siswa secara akurat
+  var answeredCountMap = {};
+  var jwbSheet = ss.getSheetByName("Jawaban");
+  if (jwbSheet && jwbSheet.getLastRow() > 1) {
+    var jData = jwbSheet.getDataRange().getValues();
+    for (var j = 1; j < jData.length; j++) {
+      var jr = jData[j];
+      var jNis = String(jr[0] || "").trim();
+      var jNo = Number(jr[1] || 0);
+      var jAns = String(jr[2] || "");
+      var jTime = String(jr[3] || "");
+      if (jNis && jNo) {
+        result.jawaban.push([jNis, jNo, jAns, jTime]);
+        if (!answeredCountMap[jNis]) answeredCountMap[jNis] = {};
+        if (jAns.trim() !== "") {
+          answeredCountMap[jNis][jNo] = true;
+        }
+      }
+    }
+  }
+
+  // 2. Ambil Sesi
   var sesiSheet = ss.getSheetByName("Sesi");
   if (sesiSheet && sesiSheet.getLastRow() > 1) {
     var sData = sesiSheet.getDataRange().getValues();
@@ -403,7 +492,8 @@ function handleGetRealtimeMonitorData() {
       var r = sData[i];
       var nis = String(r[0] || "").trim();
       if (nis) {
-        result.sesi[nis] = {
+        var countAns = answeredCountMap[nis] ? Object.keys(answeredCountMap[nis]).length : 0;
+        result.sesi.push({
           nis: nis,
           ruang: String(r[1] || ""),
           token_sesi: String(r[2] || ""),
@@ -414,8 +504,25 @@ function handleGetRealtimeMonitorData() {
           jumlah_pelanggaran: Number(r[7] || 0),
           soal_terakhir: Number(r[8] || 1),
           waktu_aktif_terakhir: String(r[9] || ""),
-          jumlah_terjawab: 0
-        };
+          jumlah_terjawab: countAns
+        });
+      }
+    }
+  }
+
+  // 3. Ambil Log_Pelanggaran
+  var logSheet = ss.getSheetByName("Log_Pelanggaran");
+  if (logSheet && logSheet.getLastRow() > 1) {
+    var lData = logSheet.getDataRange().getValues();
+    for (var k = 1; k < lData.length; k++) {
+      var lr = lData[k];
+      if (lr[1]) {
+        result.log_pelanggaran.push([
+          String(lr[0] || ""),
+          String(lr[1] || ""),
+          String(lr[2] || "PINDAH_TAB"),
+          String(lr[3] || "")
+        ]);
       }
     }
   }
@@ -423,4 +530,5 @@ function handleGetRealtimeMonitorData() {
   return result;
 }
 `;
+
 

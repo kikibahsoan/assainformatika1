@@ -117,6 +117,26 @@ export default function App() {
     return id;
   };
 
+  const requestFullscreenImmediately = () => {
+    try {
+      const docEl = document.documentElement as HTMLElement & {
+        webkitRequestFullscreen?: () => Promise<void>;
+        msRequestFullscreen?: () => Promise<void>;
+      };
+      if (!document.fullscreenElement) {
+        if (docEl.requestFullscreen) {
+          void docEl.requestFullscreen().catch(() => {});
+        } else if (docEl.webkitRequestFullscreen) {
+          void docEl.webkitRequestFullscreen();
+        } else if (docEl.msRequestFullscreen) {
+          void docEl.msRequestFullscreen();
+        }
+      }
+    } catch {
+      // ignore if restricted by iOS Safari or iframe sandbox
+    }
+  };
+
   const handleStudentLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     setStudentError('');
@@ -129,6 +149,9 @@ export default function App() {
       setStudentError('Silakan pilih Nama Lengkap Anda sesuai daftar kelas.');
       return;
     }
+
+    // Trigger fullscreen synchronously during the user tap/click gesture (essential for HP/Mobile browsers)
+    requestFullscreenImmediately();
 
     setIsLoggingIn(true);
     try {

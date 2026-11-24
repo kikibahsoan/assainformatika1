@@ -47,6 +47,7 @@ import {
   SpreadsheetDatabase,
   subscribeToRealtimeDatabase,
   syncAllWithGoogleSpreadsheet,
+  syncLocalAnswerBuffersIntoDb,
 } from '../services/cbtBackendService';
 
 interface TeacherSupervisorPanelProps {
@@ -67,7 +68,13 @@ export const TeacherSupervisorPanel: React.FC<TeacherSupervisorPanelProps> = ({
   staff,
   onLogout,
 }) => {
-  const [db, setDb] = useState<SpreadsheetDatabase>(() => loadDatabase());
+  const [db, setDb] = useState<SpreadsheetDatabase>(() => {
+    const initialDb = loadDatabase();
+    if (syncLocalAnswerBuffersIntoDb(initialDb)) {
+      saveDatabase(initialDb, false);
+    }
+    return initialDb;
+  });
   const [activeTab, setActiveTab] = useState<TabKey>('MONITOR');
   const [selectedRoomFilter, setSelectedRoomFilter] = useState<string>(() =>
     staff.peran === 'PENGAWAS' && staff.ruang_tugas !== 'ALL' ? staff.ruang_tugas : 'ALL'
@@ -117,7 +124,10 @@ export const TeacherSupervisorPanel: React.FC<TeacherSupervisorPanelProps> = ({
 
   const refreshFromStorage = () => {
     const fresh = loadDatabase();
-    setDb(fresh);
+    if (syncLocalAnswerBuffersIntoDb(fresh)) {
+      saveDatabase(fresh, false);
+    }
+    setDb({ ...fresh });
     setLastRefreshed(
       new Date().toLocaleTimeString('id-ID', {
         hour: '2-digit',
@@ -132,6 +142,7 @@ export const TeacherSupervisorPanel: React.FC<TeacherSupervisorPanelProps> = ({
     setIsSyncingSheet(true);
     try {
       const res = await syncAllWithGoogleSpreadsheet();
+      await pullRealtimeMonitorFromSpreadsheet();
       refreshFromStorage();
       const timeStr = new Date().toLocaleTimeString('id-ID', {
         hour: '2-digit',
@@ -146,10 +157,11 @@ export const TeacherSupervisorPanel: React.FC<TeacherSupervisorPanelProps> = ({
     }
   };
 
-  // Real-time 0ms Subscription (BroadcastChannel + CustomEvent + storage) & Continuous Live Timer + Cloud Pull
+  // Real-time 0ms Subscription (BroadcastChannel + CustomEvent + storage) & 1s Live Ticker + 3.5s Cloud Pull
   useEffect(() => {
     const unsubscribe = subscribeToRealtimeDatabase((fresh) => {
-      setDb(fresh);
+      syncLocalAnswerBuffersIntoDb(fresh);
+      setDb({ ...fresh });
       setLastRefreshed(
         new Date().toLocaleTimeString('id-ID', {
           hour: '2-digit',
@@ -159,15 +171,15 @@ export const TeacherSupervisorPanel: React.FC<TeacherSupervisorPanelProps> = ({
       );
     });
 
-    // Fast 2-second ticker so "Aktif Terakhir" (Baru saja / X dtk lalu) and "Sisa Waktu" tick smoothly in real-time
+    // Fast 1-second ticker so "Aktif Terakhir", "Progres Soal", and "Sisa Waktu" update live every second
     const localTicker = window.setInterval(() => {
       refreshFromStorage();
-    }, 2000);
+    }, 1000);
 
-    // Background cloud pull every 6 seconds from Google Apps Script Spreadsheet
+    // Background cloud pull every 3.5 seconds from Google Apps Script Spreadsheet
     const cloudPullTicker = window.setInterval(() => {
       void pullRealtimeMonitorFromSpreadsheet();
-    }, 6000);
+    }, 3500);
     void pullRealtimeMonitorFromSpreadsheet();
 
     return () => {
@@ -205,8 +217,15 @@ export const TeacherSupervisorPanel: React.FC<TeacherSupervisorPanelProps> = ({
     return [...filtered].sort((a, b) => {
       const sesiA = db.sesi[a.nis];
       const sesiB = db.sesi[b.nis];
+      const ansCountA = Object.values(db.jawaban[a.nis] || {}).filter(
+        (x) => x.jawaban && String(x.jawaban).trim() !== ''
+      ).length;
+      const ansCountB = Object.values(db.jawaban[b.nis] || {}).filter(
+        (x) => x.jawaban && String(x.jawaban).trim() !== ''
+      ).length;
+
       const rankA =
-        sesiA?.status === 'MENGERJAKAN'
+        sesiA?.status === 'MENGERJAKAN' || ansCountA > 0
           ? 3
           : sesiA?.status === 'TERKUNCI'
           ? 2
@@ -214,7 +233,7 @@ export const TeacherSupervisorPanel: React.FC<TeacherSupervisorPanelProps> = ({
           ? 1
           : 0;
       const rankB =
-        sesiB?.status === 'MENGERJAKAN'
+        sesiB?.status === 'MENGERJAKAN' || ansCountB > 0
           ? 3
           : sesiB?.status === 'TERKUNCI'
           ? 2
@@ -227,9 +246,10 @@ export const TeacherSupervisorPanel: React.FC<TeacherSupervisorPanelProps> = ({
         const timeB = new Date(sesiB.waktu_aktif_terakhir).getTime() || 0;
         if (timeA !== timeB) return timeB - timeA;
       }
+      if (ansCountA !== ansCountB) return ansCountB - ansCountA;
       return a.nis.localeCompare(b.nis);
     });
-  }, [db.siswa, db.sesi, staff, selectedRoomFilter, selectedClassFilter, searchQuery]);
+  }, [db.siswa, db.sesi, db.jawaban, staff, selectedRoomFilter, selectedClassFilter, searchQuery]);
 
   // ===================== SUPERVISOR CONTROL ACTIONS =====================
 
@@ -601,7 +621,13 @@ export const TeacherSupervisorPanel: React.FC<TeacherSupervisorPanelProps> = ({
   // Helper for student live status row styling
   const getStudentLiveMeta = (s: SiswaRecord) => {
     const sesi = db.sesi[s.nis];
-    if (!sesi || sesi.status === 'BELUM') {
+    const studentAnswerMap = db.jawaban[s.nis] || {};
+    const liveAnsCount = Object.values(studentAnswerMap).filter(
+      (a) => a.jawaban && String(a.jawaban).trim() !== ''
+    ).length;
+    const liveProgress = Math.max(sesi?.jumlah_terjawab || 0, liveAnsCount);
+
+    if ((!sesi || sesi.status === 'BELUM') && liveProgress === 0) {
       return {
         label: 'Belum Masuk',
         badgeClass: 'bg-slate-100 text-slate-700 border-slate-300',
@@ -613,23 +639,26 @@ export const TeacherSupervisorPanel: React.FC<TeacherSupervisorPanelProps> = ({
       };
     }
 
-    const deadlineMs =
-      new Date(sesi.batas_waktu).getTime() + (sesi.tambahan_menit || 0) * 60 * 1000;
+    const deadlineMs = sesi
+      ? new Date(sesi.batas_waktu).getTime() + (sesi.tambahan_menit || 0) * 60 * 1000
+      : Date.now() + db.pengaturan.durasi_menit * 60 * 1000;
     const remMins = Math.max(0, Math.ceil((deadlineMs - Date.now()) / 60000));
-    const lastActiveSecs = Math.max(
-      0,
-      Math.floor((Date.now() - new Date(sesi.waktu_aktif_terakhir).getTime()) / 1000)
-    );
-    const isOffline = sesi.status === 'MENGERJAKAN' && lastActiveSecs > 120;
+    const lastActiveSecs = sesi?.waktu_aktif_terakhir
+      ? Math.max(0, Math.floor((Date.now() - new Date(sesi.waktu_aktif_terakhir).getTime()) / 1000))
+      : 0;
+    const lastActiveLabel =
+      lastActiveSecs <= 3 ? 'Baru saja (Live)' : `${lastActiveSecs} dtk lalu`;
+    const isOffline = sesi?.status === 'MENGERJAKAN' && lastActiveSecs > 120;
+    const violationsCount = sesi?.jumlah_pelanggaran || 0;
 
-    if (sesi.status === 'SELESAI') {
+    if (sesi?.status === 'SELESAI') {
       return {
         label: 'Selesai',
         badgeClass: 'bg-blue-100 text-blue-800 border-blue-300 font-semibold',
         cardBorder: 'border-blue-200 bg-blue-50/20',
         remainingText: 'Selesai',
-        progress: sesi.jumlah_terjawab || 40,
-        violations: sesi.jumlah_pelanggaran || 0,
+        progress: liveProgress > 0 ? liveProgress : 40,
+        violations: violationsCount,
         lastActive: 'Terkumpul',
       };
     }
@@ -640,44 +669,44 @@ export const TeacherSupervisorPanel: React.FC<TeacherSupervisorPanelProps> = ({
         badgeClass: 'bg-slate-200 text-slate-800 border-slate-400',
         cardBorder: 'border-slate-300 bg-slate-50',
         remainingText: `${remMins} mnt`,
-        progress: sesi.jumlah_terjawab || 0,
-        violations: sesi.jumlah_pelanggaran || 0,
+        progress: liveProgress,
+        violations: violationsCount,
         lastActive: `${Math.floor(lastActiveSecs / 60)} mnt lalu`,
       };
     }
 
-    if (sesi.jumlah_pelanggaran >= db.pengaturan.batas_pelanggaran) {
+    if (violationsCount >= db.pengaturan.batas_pelanggaran) {
       return {
-        label: `Pelanggaran (${sesi.jumlah_pelanggaran}x Tercatat)`,
+        label: `Pelanggaran (${violationsCount}x Tercatat)`,
         badgeClass: 'bg-red-100 text-red-800 border-red-300 font-bold',
         cardBorder: 'border-red-400 bg-red-50/40',
         remainingText: `${remMins} mnt`,
-        progress: sesi.jumlah_terjawab || 0,
-        violations: sesi.jumlah_pelanggaran,
-        lastActive: `${lastActiveSecs} dtk lalu`,
+        progress: liveProgress,
+        violations: violationsCount,
+        lastActive: lastActiveLabel,
       };
     }
 
-    if (sesi.jumlah_pelanggaran > 0) {
+    if (violationsCount > 0) {
       return {
-        label: `Peringatan (${sesi.jumlah_pelanggaran}x Tercatat)`,
+        label: `Peringatan (${violationsCount}x Tercatat)`,
         badgeClass: 'bg-amber-100 text-amber-900 border-amber-300 font-semibold',
         cardBorder: 'border-amber-300 bg-amber-50/30',
         remainingText: `${remMins} mnt`,
-        progress: sesi.jumlah_terjawab || 0,
-        violations: sesi.jumlah_pelanggaran,
-        lastActive: `${lastActiveSecs} dtk lalu`,
+        progress: liveProgress,
+        violations: violationsCount,
+        lastActive: lastActiveLabel,
       };
     }
 
     return {
-      label: 'Mengerjakan (Normal)',
+      label: 'Mengerjakan (Live)',
       badgeClass: 'bg-emerald-100 text-emerald-800 border-emerald-300 font-semibold',
-      cardBorder: 'border-emerald-200 bg-white',
+      cardBorder: 'border-emerald-200 bg-emerald-50/15',
       remainingText: `${remMins} mnt`,
-      progress: sesi.jumlah_terjawab || 0,
+      progress: liveProgress,
       violations: 0,
-      lastActive: `${lastActiveSecs} dtk lalu`,
+      lastActive: lastActiveLabel,
     };
   };
 
