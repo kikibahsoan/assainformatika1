@@ -11,6 +11,7 @@ import {
   Copy,
   Database,
   Download,
+  Eye,
   FileSpreadsheet,
   Lock,
   LogOut,
@@ -27,6 +28,7 @@ import {
   Unlock,
   Upload,
   Users,
+  X,
 } from 'lucide-react';
 import { CODE_GS_CONTENT } from '../data/codeGsTemplate';
 import { QuestionFull, QuestionType } from '../data/questionsData';
@@ -87,6 +89,7 @@ export const TeacherSupervisorPanel: React.FC<TeacherSupervisorPanelProps> = ({
   const [toastMsg, setToastMsg] = useState<string | null>(null);
   const [isSyncingSheet, setIsSyncingSheet] = useState<boolean>(false);
   const [lastSheetSyncTime, setLastSheetSyncTime] = useState<string | null>(null);
+  const [inspectingStudentNis, setInspectingStudentNis] = useState<string | null>(null);
 
   // Essay Grading State (starts with first student in sheet, no dummy pre-scored student)
   const [selectedStudentForEssay, setSelectedStudentForEssay] = useState<string>(
@@ -711,491 +714,685 @@ export const TeacherSupervisorPanel: React.FC<TeacherSupervisorPanelProps> = ({
   };
 
   return (
-    <div className="min-h-screen bg-slate-50 flex flex-col">
-      {/* Top Bar Contract: Brand | Navigation Tabs | Account Action */}
-      <header className="sticky top-0 z-30 bg-white border-b border-slate-200 px-6 py-3">
-        <div className="max-w-[1440px] mx-auto flex items-center justify-between gap-6">
-          {/* Zone 1: Brand Title */}
-          <div className="flex items-center gap-3 shrink-0">
-            <div className="w-10 h-9 rounded-lg bg-slate-900 text-emerald-400 font-extrabold text-xs tracking-wider flex items-center justify-center">
-              ASSA
+    <div className="min-h-screen bg-slate-50 flex flex-col lg:flex-row">
+      {/* ===================== LEFT SIDEBAR NAVIGATION ===================== */}
+      <aside className="w-full lg:w-64 lg:min-h-screen lg:sticky lg:top-0 lg:h-screen bg-white border-b lg:border-b-0 lg:border-r border-slate-200 flex flex-col justify-between shrink-0 z-30">
+        <div>
+          {/* Brand Title */}
+          <div className="p-4 border-b border-slate-200 flex items-center justify-between lg:justify-start gap-3">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-9 rounded-lg bg-slate-900 text-emerald-400 font-extrabold text-xs tracking-wider flex items-center justify-center shrink-0">
+                ASSA
+              </div>
+              <div>
+                <span className="text-sm font-bold text-slate-900 block leading-tight">
+                  Panel {staff.peran === 'GURU' ? 'Guru & Admin' : 'Pengawas'}
+                </span>
+                <span className="text-[11px] text-slate-500 font-medium block">
+                  ASSA Informatika · SMKN 2
+                </span>
+              </div>
             </div>
-            <span className="text-base font-bold text-slate-900 whitespace-nowrap">
-              Panel {staff.peran === 'GURU' ? 'Guru & Admin ASSA' : `Pengawas (${staff.ruang_tugas})`}
+            <div className="flex items-center gap-1.5 lg:hidden">
+              <button
+                type="button"
+                onClick={() => void handleSyncToSpreadsheet()}
+                disabled={isSyncingSheet}
+                className="px-2.5 py-1.5 rounded-lg bg-emerald-700 hover:bg-emerald-800 disabled:opacity-60 text-white text-xs font-semibold flex items-center gap-1"
+              >
+                <FileSpreadsheet className={`w-3.5 h-3.5 ${isSyncingSheet ? 'animate-spin' : ''}`} />
+                Sinkron
+              </button>
+              <button
+                type="button"
+                onClick={onLogout}
+                className="px-2.5 py-1.5 rounded-lg bg-slate-900 text-white text-xs font-semibold flex items-center gap-1"
+              >
+                <LogOut className="w-3.5 h-3.5" />
+                Keluar
+              </button>
+            </div>
+          </div>
+
+          {/* Vertical Sidebar Navigation Links */}
+          <div className="p-3">
+            <p className="px-3 pb-2 text-[11px] font-bold text-slate-400 uppercase tracking-wider hidden lg:block">
+              Menu Navigasi Panel
+            </p>
+            <nav className="flex lg:flex-col gap-1.5 overflow-x-auto lg:overflow-visible pb-1 lg:pb-0">
+              <button
+                type="button"
+                onClick={() => setActiveTab('MONITOR')}
+                className={`w-auto lg:w-full px-3.5 py-2.5 rounded-xl text-xs font-semibold transition-colors whitespace-nowrap shrink-0 flex items-center justify-between gap-2 ${
+                  activeTab === 'MONITOR'
+                    ? 'bg-blue-700 text-white shadow-xs'
+                    : 'text-slate-700 hover:bg-slate-100 hover:text-slate-900'
+                }`}
+              >
+                <span className="flex items-center gap-2.5">
+                  <Activity className="w-4 h-4 shrink-0" />
+                  <span>Pantau Langsung</span>
+                </span>
+                <span
+                  className={`w-2 h-2 rounded-full ${
+                    activeTab === 'MONITOR' ? 'bg-emerald-300 animate-ping' : 'bg-emerald-600'
+                  }`}
+                />
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setActiveTab('VIOLATIONS')}
+                className={`w-auto lg:w-full px-3.5 py-2.5 rounded-xl text-xs font-semibold transition-colors whitespace-nowrap shrink-0 flex items-center justify-between gap-2 ${
+                  activeTab === 'VIOLATIONS'
+                    ? 'bg-blue-700 text-white shadow-xs'
+                    : 'text-slate-700 hover:bg-slate-100 hover:text-slate-900'
+                }`}
+              >
+                <span className="flex items-center gap-2.5">
+                  <ShieldAlert className="w-4 h-4 shrink-0" />
+                  <span>Log Pelanggaran</span>
+                </span>
+                <span
+                  className={`px-1.5 py-0.5 rounded-md font-mono text-[11px] font-bold ${
+                    activeTab === 'VIOLATIONS'
+                      ? 'bg-blue-800 text-white'
+                      : db.log_pelanggaran.length > 0
+                      ? 'bg-amber-100 text-amber-900'
+                      : 'bg-slate-100 text-slate-600'
+                  }`}
+                >
+                  {db.log_pelanggaran.length}
+                </span>
+              </button>
+
+              {staff.peran === 'GURU' && (
+                <>
+                  <button
+                    type="button"
+                    onClick={() => setActiveTab('ESSAY_GRADING')}
+                    className={`w-auto lg:w-full px-3.5 py-2.5 rounded-xl text-xs font-semibold transition-colors whitespace-nowrap shrink-0 flex items-center gap-2.5 ${
+                      activeTab === 'ESSAY_GRADING'
+                        ? 'bg-blue-700 text-white shadow-xs'
+                        : 'text-slate-700 hover:bg-slate-100 hover:text-slate-900'
+                    }`}
+                  >
+                    <Award className="w-4 h-4 shrink-0" />
+                    <span>Koreksi Uraian</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setActiveTab('SCORES_ANALYTICS')}
+                    className={`w-auto lg:w-full px-3.5 py-2.5 rounded-xl text-xs font-semibold transition-colors whitespace-nowrap shrink-0 flex items-center gap-2.5 ${
+                      activeTab === 'SCORES_ANALYTICS'
+                        ? 'bg-blue-700 text-white shadow-xs'
+                        : 'text-slate-700 hover:bg-slate-100 hover:text-slate-900'
+                    }`}
+                  >
+                    <BarChart3 className="w-4 h-4 shrink-0" />
+                    <span>Rekap Nilai & Analisis</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setActiveTab('DATA_SETTINGS')}
+                    className={`w-auto lg:w-full px-3.5 py-2.5 rounded-xl text-xs font-semibold transition-colors whitespace-nowrap shrink-0 flex items-center gap-2.5 ${
+                      activeTab === 'DATA_SETTINGS'
+                        ? 'bg-blue-700 text-white shadow-xs'
+                        : 'text-slate-700 hover:bg-slate-100 hover:text-slate-900'
+                    }`}
+                  >
+                    <Settings className="w-4 h-4 shrink-0" />
+                    <span>Bank Soal & Pengaturan</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setActiveTab('LOAD_TEST')}
+                    className={`w-auto lg:w-full px-3.5 py-2.5 rounded-xl text-xs font-semibold transition-colors whitespace-nowrap shrink-0 flex items-center gap-2.5 ${
+                      activeTab === 'LOAD_TEST'
+                        ? 'bg-blue-700 text-white shadow-xs'
+                        : 'text-slate-700 hover:bg-slate-100 hover:text-slate-900'
+                    }`}
+                  >
+                    <Users className="w-4 h-4 shrink-0" />
+                    <span>Uji Beban 300 Siswa</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setActiveTab('APPS_SCRIPT')}
+                    className={`w-auto lg:w-full px-3.5 py-2.5 rounded-xl text-xs font-semibold transition-colors whitespace-nowrap shrink-0 flex items-center gap-2.5 ${
+                      activeTab === 'APPS_SCRIPT'
+                        ? 'bg-blue-700 text-white shadow-xs'
+                        : 'text-slate-700 hover:bg-slate-100 hover:text-slate-900'
+                    }`}
+                  >
+                    <Code2 className="w-4 h-4 shrink-0" />
+                    <span>Code.gs & Deploy</span>
+                  </button>
+                </>
+              )}
+            </nav>
+          </div>
+        </div>
+
+        {/* Bottom Sidebar Actions: Sinkron ke Spreadsheet & Keluar (Desktop) */}
+        <div className="hidden lg:flex flex-col gap-2 p-4 border-t border-slate-200 bg-slate-50/60">
+          <div className="px-2 py-1.5 rounded-lg bg-emerald-50 border border-emerald-200 text-[11px] text-emerald-800 flex items-center gap-2">
+            <span className="w-2 h-2 rounded-full bg-emerald-600 animate-ping shrink-0" />
+            <span className="truncate font-semibold">
+              Live Sync: {lastRefreshed}
             </span>
           </div>
+          <button
+            type="button"
+            onClick={() => void handleSyncToSpreadsheet()}
+            disabled={isSyncingSheet}
+            className="w-full px-3.5 py-2.5 rounded-xl bg-emerald-700 hover:bg-emerald-800 disabled:opacity-60 text-white text-xs font-semibold flex items-center justify-center gap-2"
+            title="Sinkronkan semua sesi, jawaban, pelanggaran, dan nilai siswa ke Google Spreadsheet"
+          >
+            <FileSpreadsheet className={`w-4 h-4 ${isSyncingSheet ? 'animate-spin' : ''}`} />
+            {isSyncingSheet ? 'Menyinkronkan...' : 'Sinkron ke Spreadsheet'}
+          </button>
+          <button
+            type="button"
+            onClick={onLogout}
+            className="w-full px-3.5 py-2.5 rounded-xl bg-slate-900 hover:bg-slate-800 text-white text-xs font-semibold flex items-center justify-center gap-2"
+          >
+            <LogOut className="w-4 h-4" />
+            Keluar Panel
+          </button>
+        </div>
+      </aside>
 
-          {/* Zone 2: Functional Navigation Tabs */}
-          <nav className="flex items-center gap-1 overflow-x-auto py-1">
-            <button
-              type="button"
-              onClick={() => setActiveTab('MONITOR')}
-              className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors whitespace-nowrap shrink-0 flex items-center gap-1.5 ${
-                activeTab === 'MONITOR'
-                  ? 'bg-blue-700 text-white'
-                  : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900'
-              }`}
-            >
-              <Activity className="w-3.5 h-3.5" />
-              Pantau Langsung
-            </button>
-
-            <button
-              type="button"
-              onClick={() => setActiveTab('VIOLATIONS')}
-              className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors whitespace-nowrap shrink-0 flex items-center gap-1.5 ${
-                activeTab === 'VIOLATIONS'
-                  ? 'bg-blue-700 text-white'
-                  : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900'
-              }`}
-            >
-              <ShieldAlert className="w-3.5 h-3.5" />
-              Log Pelanggaran ({db.log_pelanggaran.length})
-            </button>
-
-            {staff.peran === 'GURU' && (
-              <>
-                <button
-                  type="button"
-                  onClick={() => setActiveTab('ESSAY_GRADING')}
-                  className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors whitespace-nowrap shrink-0 flex items-center gap-1.5 ${
-                    activeTab === 'ESSAY_GRADING'
-                      ? 'bg-blue-700 text-white'
-                      : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900'
-                  }`}
-                >
-                  <Award className="w-3.5 h-3.5" />
-                  Koreksi Uraian
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => setActiveTab('SCORES_ANALYTICS')}
-                  className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors whitespace-nowrap shrink-0 flex items-center gap-1.5 ${
-                    activeTab === 'SCORES_ANALYTICS'
-                      ? 'bg-blue-700 text-white'
-                      : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900'
-                  }`}
-                >
-                  <BarChart3 className="w-3.5 h-3.5" />
-                  Rekap Nilai & Analisis
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => setActiveTab('DATA_SETTINGS')}
-                  className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors whitespace-nowrap shrink-0 flex items-center gap-1.5 ${
-                    activeTab === 'DATA_SETTINGS'
-                      ? 'bg-blue-700 text-white'
-                      : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900'
-                  }`}
-                >
-                  <Settings className="w-3.5 h-3.5" />
-                  Bank Soal & Pengaturan
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => setActiveTab('LOAD_TEST')}
-                  className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors whitespace-nowrap shrink-0 flex items-center gap-1.5 ${
-                    activeTab === 'LOAD_TEST'
-                      ? 'bg-blue-700 text-white'
-                      : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900'
-                  }`}
-                >
-                  <Users className="w-3.5 h-3.5" />
-                  Uji Beban 300 Siswa
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => setActiveTab('APPS_SCRIPT')}
-                  className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors whitespace-nowrap shrink-0 flex items-center gap-1.5 ${
-                    activeTab === 'APPS_SCRIPT'
-                      ? 'bg-blue-700 text-white'
-                      : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900'
-                  }`}
-                >
-                  <Code2 className="w-3.5 h-3.5" />
-                  Code.gs & Deploy
-                </button>
-              </>
-            )}
-          </nav>
-
-          {/* Zone 3: Primary Action / Sync to Spreadsheet / Logout */}
-          <div className="flex items-center gap-2 shrink-0">
-            <button
-              type="button"
-              onClick={() => void handleSyncToSpreadsheet()}
-              disabled={isSyncingSheet}
-              className="px-3.5 py-1.5 rounded-lg bg-emerald-700 hover:bg-emerald-800 disabled:opacity-60 text-white text-xs font-semibold flex items-center gap-1.5 whitespace-nowrap shrink-0"
-              title="Sinkronkan semua sesi, jawaban, pelanggaran, dan nilai siswa ke Google Spreadsheet"
-            >
-              <FileSpreadsheet className={`w-3.5 h-3.5 ${isSyncingSheet ? 'animate-spin' : ''}`} />
-              {isSyncingSheet ? 'Menyinkronkan...' : 'Sinkron ke Spreadsheet'}
-            </button>
-            <button
-              type="button"
-              onClick={onLogout}
-              className="px-3.5 py-1.5 rounded-lg bg-slate-900 hover:bg-slate-800 text-white text-xs font-semibold flex items-center gap-1.5 whitespace-nowrap shrink-0"
-            >
-              <LogOut className="w-3.5 h-3.5" />
-              Keluar
-            </button>
+      {/* ===================== RIGHT WORKSPACE COLUMN ===================== */}
+      <div className="flex-1 min-w-0 flex flex-col">
+        {/* Feedback Toast Banner */}
+        {toastMsg && (
+          <div className="bg-emerald-700 text-white px-6 py-2.5 text-xs font-semibold flex items-center justify-center gap-2">
+            <CheckCircle2 className="w-4 h-4 shrink-0" />
+            <span>{toastMsg}</span>
           </div>
-        </div>
-      </header>
+        )}
 
-      {/* Feedback Toast Banner */}
-      {toastMsg && (
-        <div className="bg-emerald-700 text-white px-6 py-2.5 text-xs font-semibold flex items-center justify-center gap-2">
-          <CheckCircle2 className="w-4 h-4 shrink-0" />
-          <span>{toastMsg}</span>
-        </div>
-      )}
+        {/* Main Content Container */}
+        <main className="flex-1 max-w-[1440px] w-full mx-auto px-4 sm:px-6 py-6">
+          {/* ===================== TAB 1: PANTAU LANGSUNG & KONTROL PENGAWAS ===================== */}
+          {activeTab === 'MONITOR' && (
+            <div className="space-y-6">
+              {/* Unified Exam Control Card (No Ruang Ujian Utama / Ruang Ujian 2) */}
+              {db.ruang.slice(0, 1).map((room) => {
+                const isRunning = room.status_mulai === 'BERJALAN';
+                const activeCount = db.siswa.filter((st) => {
+                  const s = db.sesi[st.nis];
+                  const hasAns =
+                    Object.values(db.jawaban[st.nis] || {}).filter(
+                      (a) => String(a.jawaban || '').trim() !== ''
+                    ).length > 0;
+                  return s?.status === 'MENGERJAKAN' || (!s && hasAns);
+                }).length;
+                const finishedCount = Object.values(db.sesi).filter(
+                  (s) => s.status === 'SELESAI'
+                ).length;
+                const totalSavedAnswers = Object.values(db.jawaban).reduce(
+                  (acc, studentMap) =>
+                    acc +
+                    Object.values(studentMap).filter((a) => String(a.jawaban || '').trim() !== '')
+                      .length,
+                  0
+                );
 
-      {/* Main Content Container */}
-      <main className="flex-1 max-w-[1440px] w-full mx-auto px-4 sm:px-6 py-6">
-        {/* ===================== TAB 1: PANTAU LANGSUNG & KONTROL PENGAWAS ===================== */}
-        {activeTab === 'MONITOR' && (
-          <div className="space-y-6">
-            {/* Unified Exam Control Card (No Ruang Ujian Utama / Ruang Ujian 2) */}
-            {db.ruang.slice(0, 1).map((room) => {
-              const isRunning = room.status_mulai === 'BERJALAN';
-              const activeCount = Object.values(db.sesi).filter((s) => s.status === 'MENGERJAKAN').length;
-              const finishedCount = Object.values(db.sesi).filter((s) => s.status === 'SELESAI').length;
-              const totalSavedAnswers = Object.values(db.jawaban).reduce(
-                (acc, studentMap) =>
-                  acc +
-                  Object.values(studentMap).filter((a) => String(a.jawaban || '').trim() !== '').length,
-                0
-              );
-
-              return (
-                <div key={room.kode_ruang} className="space-y-4">
-                  <div className="bg-white border border-slate-200 rounded-xl p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-                    <div>
-                      <div className="flex items-center gap-2">
-                        <span className="text-sm font-bold text-slate-900">
-                          Kontrol Sesi Ujian — {db.pengaturan.judul_ujian}
-                        </span>
-                        <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-md bg-emerald-50 border border-emerald-200 text-[11px] font-bold text-emerald-800">
-                          <span className="w-2 h-2 rounded-full bg-emerald-600 animate-pulse" />
-                          REALTIME AKTIF ({room.status_mulai})
-                        </span>
+                return (
+                  <div key={room.kode_ruang} className="space-y-4">
+                    <div className="bg-white border border-slate-200 rounded-xl p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                      <div>
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className="text-sm font-bold text-slate-900">
+                            Kontrol Sesi Ujian — {db.pengaturan.judul_ujian}
+                          </span>
+                          <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-md bg-emerald-50 border border-emerald-200 text-[11px] font-bold text-emerald-800">
+                            <span className="w-2 h-2 rounded-full bg-emerald-600 animate-pulse" />
+                            REALTIME SPREADSHEET AKTIF ({room.status_mulai})
+                          </span>
+                        </div>
+                        <div className="mt-1 text-xs text-slate-600 flex flex-wrap items-center gap-3">
+                          <span>
+                            Token Ujian:{' '}
+                            <strong className="font-mono text-blue-700 text-sm">
+                              {room.token_ujian}
+                            </strong>
+                          </span>
+                          <span>·</span>
+                          <span>
+                            PIN Buka Kunci Pengawas:{' '}
+                            <strong className="font-mono text-slate-900">
+                              {db.pengaturan.pin_pengawas}
+                            </strong>
+                          </span>
+                          <span>·</span>
+                          <span>
+                            Total Peserta Terdaftar:{' '}
+                            <strong className="font-mono text-slate-900">
+                              {db.siswa.filter((s) => !s.nis.startsWith('SIM')).length} Siswa (12 Kelas)
+                            </strong>
+                          </span>
+                          {lastSheetSyncTime && (
+                            <>
+                              <span>·</span>
+                              <span className="text-emerald-700 font-semibold">
+                                Sinkron Spreadsheet Terakhir: {lastSheetSyncTime}
+                              </span>
+                            </>
+                          )}
+                        </div>
                       </div>
-                      <div className="mt-1 text-xs text-slate-600 flex flex-wrap items-center gap-3">
-                        <span>
-                          Token Ujian:{' '}
-                          <strong className="font-mono text-blue-700 text-sm">
-                            {room.token_ujian}
-                          </strong>
-                        </span>
-                        <span>·</span>
-                        <span>
-                          PIN Buka Kunci Pengawas:{' '}
-                          <strong className="font-mono text-slate-900">
-                            {db.pengaturan.pin_pengawas}
-                          </strong>
-                        </span>
-                        <span>·</span>
-                        <span>
-                          Total Peserta Terdaftar:{' '}
-                          <strong className="font-mono text-slate-900">
-                            {db.siswa.filter((s) => !s.nis.startsWith('SIM')).length} Siswa (12 Kelas)
-                          </strong>
-                        </span>
-                        {lastSheetSyncTime && (
-                          <>
-                            <span>·</span>
-                            <span className="text-emerald-700 font-semibold">
-                              Sinkron Spreadsheet Terakhir: {lastSheetSyncTime}
-                            </span>
-                          </>
+
+                      <div className="flex flex-wrap items-center gap-2 shrink-0">
+                        <button
+                          type="button"
+                          onClick={() => void handleSyncToSpreadsheet()}
+                          disabled={isSyncingSheet}
+                          className="px-3.5 py-2 bg-blue-700 hover:bg-blue-800 disabled:opacity-60 text-white text-xs font-semibold rounded-lg flex items-center gap-1.5 whitespace-nowrap"
+                        >
+                          <FileSpreadsheet className={`w-3.5 h-3.5 ${isSyncingSheet ? 'animate-spin' : ''}`} />
+                          {isSyncingSheet ? 'Menyinkronkan ke Spreadsheet...' : 'Sinkron ke Spreadsheet'}
+                        </button>
+
+                        {!isRunning ? (
+                          <button
+                            type="button"
+                            onClick={() => handleToggleRoomStatus(room.kode_ruang, 'BERJALAN')}
+                            className="px-3.5 py-2 bg-emerald-700 hover:bg-emerald-800 text-white text-xs font-semibold rounded-lg flex items-center gap-1.5 whitespace-nowrap"
+                          >
+                            <Play className="w-3.5 h-3.5" />
+                            Aktifkan Sesi Ujian
+                          </button>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => handleToggleRoomStatus(room.kode_ruang, 'BELUM')}
+                            className="px-3.5 py-2 bg-amber-600 hover:bg-amber-700 text-white text-xs font-semibold rounded-lg flex items-center gap-1.5 whitespace-nowrap"
+                          >
+                            <Square className="w-3.5 h-3.5" />
+                            Tunda Sesi Ujian
+                          </button>
                         )}
                       </div>
                     </div>
 
-                    <div className="flex flex-wrap items-center gap-2 shrink-0">
-                      <button
-                        type="button"
-                        onClick={() => void handleSyncToSpreadsheet()}
-                        disabled={isSyncingSheet}
-                        className="px-3.5 py-2 bg-blue-700 hover:bg-blue-800 disabled:opacity-60 text-white text-xs font-semibold rounded-lg flex items-center gap-1.5 whitespace-nowrap"
-                      >
-                        <FileSpreadsheet className={`w-3.5 h-3.5 ${isSyncingSheet ? 'animate-spin' : ''}`} />
-                        {isSyncingSheet ? 'Menyinkronkan ke Spreadsheet...' : 'Sinkron ke Spreadsheet'}
-                      </button>
+                    {/* Real-Time Live Summary Counters */}
+                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                      <div className="bg-white border border-slate-200 rounded-xl p-3.5 flex items-center justify-between">
+                        <div>
+                          <p className="text-[11px] font-semibold text-slate-500 uppercase">
+                            Sedang Mengerjakan (Live)
+                          </p>
+                          <p className="text-xl font-bold font-mono tabular-nums text-blue-700 mt-0.5">
+                            {activeCount} Siswa
+                          </p>
+                        </div>
+                        <Activity className="w-5 h-5 text-blue-600" />
+                      </div>
 
-                      {!isRunning ? (
-                        <button
-                          type="button"
-                          onClick={() => handleToggleRoomStatus(room.kode_ruang, 'BERJALAN')}
-                          className="px-3.5 py-2 bg-emerald-700 hover:bg-emerald-800 text-white text-xs font-semibold rounded-lg flex items-center gap-1.5 whitespace-nowrap"
-                        >
-                          <Play className="w-3.5 h-3.5" />
-                          Aktifkan Sesi Ujian
-                        </button>
-                      ) : (
-                        <button
-                          type="button"
-                          onClick={() => handleToggleRoomStatus(room.kode_ruang, 'BELUM')}
-                          className="px-3.5 py-2 bg-amber-600 hover:bg-amber-700 text-white text-xs font-semibold rounded-lg flex items-center gap-1.5 whitespace-nowrap"
-                        >
-                          <Square className="w-3.5 h-3.5" />
-                          Tunda Sesi Ujian
-                        </button>
-                      )}
+                      <div className="bg-white border border-slate-200 rounded-xl p-3.5 flex items-center justify-between">
+                        <div>
+                          <p className="text-[11px] font-semibold text-slate-500 uppercase">
+                            Selesai Submit
+                          </p>
+                          <p className="text-xl font-bold font-mono tabular-nums text-emerald-700 mt-0.5">
+                            {finishedCount} Siswa
+                          </p>
+                        </div>
+                        <CheckCircle2 className="w-5 h-5 text-emerald-600" />
+                      </div>
+
+                      <div className="bg-white border border-slate-200 rounded-xl p-3.5 flex items-center justify-between">
+                        <div>
+                          <p className="text-[11px] font-semibold text-slate-500 uppercase">
+                            Jawaban Masuk (Realtime)
+                          </p>
+                          <p className="text-xl font-bold font-mono tabular-nums text-slate-900 mt-0.5">
+                            {totalSavedAnswers} Butir
+                          </p>
+                        </div>
+                        <Database className="w-5 h-5 text-slate-700" />
+                      </div>
+
+                      <div className="bg-white border border-slate-200 rounded-xl p-3.5 flex items-center justify-between">
+                        <div>
+                          <p className="text-[11px] font-semibold text-slate-500 uppercase">
+                            Log Pelanggaran Masuk
+                          </p>
+                          <p className="text-xl font-bold font-mono tabular-nums text-amber-700 mt-0.5">
+                            {db.log_pelanggaran.length} Kejadian
+                          </p>
+                        </div>
+                        <ShieldAlert className="w-5 h-5 text-amber-600" />
+                      </div>
                     </div>
                   </div>
+                );
+              })}
 
-                  {/* Real-Time Live Summary Counters */}
-                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-                    <div className="bg-white border border-slate-200 rounded-xl p-3.5 flex items-center justify-between">
+              {/* Live Student Answer Inspector Modal/Panel (Monitoring Langsung Pengerjaan Siswa) */}
+              {inspectingStudentNis && (() => {
+                const targetStudent = db.siswa.find((s) => s.nis === inspectingStudentNis);
+                if (!targetStudent) return null;
+                const targetSesi = db.sesi[inspectingStudentNis];
+                const targetAnswers = db.jawaban[inspectingStudentNis] || {};
+                const liveNilai = calculateStudentScoreServerSide(
+                  db,
+                  inspectingStudentNis,
+                  db.nilai[inspectingStudentNis]?.skor_uraian_per_soal
+                );
+                const answeredCount = Object.values(targetAnswers).filter(
+                  (a) => a.jawaban && String(a.jawaban).trim() !== ''
+                ).length;
+
+                return (
+                  <div className="bg-white border-2 border-blue-600 rounded-xl p-5 shadow-md space-y-4">
+                    <div className="flex flex-wrap items-center justify-between gap-3 pb-3 border-b border-slate-200">
                       <div>
-                        <p className="text-[11px] font-semibold text-slate-500 uppercase">
-                          Sedang Mengerjakan (Live)
-                        </p>
-                        <p className="text-xl font-bold font-mono tabular-nums text-blue-700 mt-0.5">
-                          {activeCount} Siswa
-                        </p>
+                        <div className="flex items-center gap-2">
+                          <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-md bg-blue-50 border border-blue-200 text-[11px] font-bold text-blue-800">
+                            <span className="w-2 h-2 rounded-full bg-blue-600 animate-ping" />
+                            MONITORING LANGSUNG PENGERJAAN SISWA
+                          </span>
+                          <span className="text-xs font-mono text-slate-500">
+                            NIS: {targetStudent.nis} · Kelas: {targetStudent.kelas}
+                          </span>
+                        </div>
+                        <h3 className="text-base font-bold text-slate-900 mt-1">
+                          {targetStudent.nama}
+                        </h3>
                       </div>
-                      <Activity className="w-5 h-5 text-blue-600" />
+
+                      <div className="flex flex-wrap items-center gap-3">
+                        <div className="text-right text-xs">
+                          <span className="text-slate-500 block">Terjawab / Posisi</span>
+                          <strong className="font-mono text-slate-900">
+                            {answeredCount}/40 Soal (Aktif di Soal #{targetSesi?.soal_terakhir || 1})
+                          </strong>
+                        </div>
+                        <div className="text-right text-xs">
+                          <span className="text-slate-500 block">Skor Objektif Sementara</span>
+                          <strong className="font-mono text-emerald-700 text-sm">
+                            {liveNilai.nilai_akhir} Poin
+                          </strong>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => setInspectingStudentNis(null)}
+                          className="p-2 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700"
+                          title="Tutup Monitoring Detail Siswa"
+                        >
+                          <X className="w-4 h-4" />
+                        </button>
+                      </div>
                     </div>
 
-                    <div className="bg-white border border-slate-200 rounded-xl p-3.5 flex items-center justify-between">
-                      <div>
-                        <p className="text-[11px] font-semibold text-slate-500 uppercase">
-                          Selesai Submit
-                        </p>
-                        <p className="text-xl font-bold font-mono tabular-nums text-emerald-700 mt-0.5">
-                          {finishedCount} Siswa
-                        </p>
-                      </div>
-                      <CheckCircle2 className="w-5 h-5 text-emerald-600" />
-                    </div>
+                    {/* 40-Question Live Grid Preview */}
+                    <div className="grid grid-cols-5 sm:grid-cols-10 gap-2">
+                      {db.bank_soal.map((q) => {
+                        const ansRec = targetAnswers[q.no];
+                        const rawAns = ansRec?.jawaban ? String(ansRec.jawaban).trim() : '';
+                        const isAnswered = rawAns !== '';
+                        const isCurrent = targetSesi?.soal_terakhir === q.no;
+                        const autoScore =
+                          q.tipe !== 'URAIAN' && isAnswered
+                            ? evaluateSingleQuestionServerSide(q, rawAns, db.pengaturan)
+                            : null;
+                        const isCorrect = autoScore !== null && autoScore >= q.bobot;
 
-                    <div className="bg-white border border-slate-200 rounded-xl p-3.5 flex items-center justify-between">
-                      <div>
-                        <p className="text-[11px] font-semibold text-slate-500 uppercase">
-                          Jawaban Masuk (Realtime)
-                        </p>
-                        <p className="text-xl font-bold font-mono tabular-nums text-slate-900 mt-0.5">
-                          {totalSavedAnswers} Butir
-                        </p>
-                      </div>
-                      <Database className="w-5 h-5 text-slate-700" />
-                    </div>
-
-                    <div className="bg-white border border-slate-200 rounded-xl p-3.5 flex items-center justify-between">
-                      <div>
-                        <p className="text-[11px] font-semibold text-slate-500 uppercase">
-                          Log Pelanggaran Masuk
-                        </p>
-                        <p className="text-xl font-bold font-mono tabular-nums text-amber-700 mt-0.5">
-                          {db.log_pelanggaran.length} Kejadian
-                        </p>
-                      </div>
-                      <ShieldAlert className="w-5 h-5 text-amber-600" />
-                    </div>
-                  </div>
-                </div>
-              );
-            })}
-
-            {/* Filter & Auto-Refresh Bar */}
-            <div className="bg-white border border-slate-200 rounded-xl p-4 flex flex-wrap items-center justify-between gap-3">
-              <div className="flex flex-wrap items-center gap-3">
-                <div className="relative">
-                  <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
-                  <input
-                    type="text"
-                    value={searchQuery}
-                    onChange={(e) => setSearchQuery(e.target.value)}
-                    placeholder="Cari NIS atau nama siswa..."
-                    className="pl-9 pr-3 py-1.5 text-xs border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-600"
-                  />
-                </div>
-
-                <select
-                  value={selectedClassFilter}
-                  onChange={(e) => setSelectedClassFilter(e.target.value)}
-                  className="px-3 py-1.5 text-xs font-medium border border-slate-300 rounded-lg bg-white"
-                >
-                  <option value="ALL">Semua Kelas ({db.siswa.length} Siswa)</option>
-                  {KELAS_10_LIST.map((kls) => (
-                    <option key={kls} value={kls}>
-                      {kls}
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              <div className="flex flex-wrap items-center gap-2.5 text-xs text-slate-600">
-                <span className="inline-flex items-center gap-1.5">
-                  <span className="w-2 h-2 rounded-full bg-emerald-600 animate-ping" />
-                  <span>
-                    Pantauan Realtime Instan (Update:{' '}
-                    <strong className="font-mono tabular-nums">{lastRefreshed}</strong>)
-                  </span>
-                </span>
-                <button
-                  type="button"
-                  onClick={refreshFromStorage}
-                  className="px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-800 font-semibold rounded-lg flex items-center gap-1.5"
-                >
-                  <RefreshCw className="w-3.5 h-3.5" />
-                  Segarkan
-                </button>
-                <button
-                  type="button"
-                  onClick={() => void handleSyncToSpreadsheet()}
-                  disabled={isSyncingSheet}
-                  className="px-3 py-1.5 bg-emerald-700 hover:bg-emerald-800 disabled:opacity-60 text-white font-semibold rounded-lg flex items-center gap-1.5"
-                >
-                  <FileSpreadsheet className={`w-3.5 h-3.5 ${isSyncingSheet ? 'animate-spin' : ''}`} />
-                  {isSyncingSheet ? 'Menyinkronkan...' : 'Sinkron ke Spreadsheet'}
-                </button>
-              </div>
-            </div>
-
-            {/* Live Student Monitoring Table */}
-            <div className="bg-white border border-slate-200 rounded-xl overflow-hidden">
-              <div className="overflow-x-auto">
-                <table className="w-full text-left border-collapse text-xs">
-                  <thead>
-                    <tr className="bg-slate-100 border-b border-slate-200 text-slate-700">
-                      <th className="py-3 px-4 font-bold">NIS</th>
-                      <th className="py-3 px-4 font-bold">Nama Siswa</th>
-                      <th className="py-3 px-4 font-bold">Kelas</th>
-                      <th className="py-3 px-4 font-bold">Status Sesi</th>
-                      <th className="py-3 px-4 font-bold">Progres Soal (Realtime)</th>
-                      <th className="py-3 px-4 font-bold">Pelanggaran</th>
-                      <th className="py-3 px-4 font-bold">Sisa Waktu</th>
-                      <th className="py-3 px-4 font-bold">Aktif Terakhir</th>
-                      <th className="py-3 px-4 font-bold text-right">Kontrol Pengawas</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-200">
-                    {visibleStudents.map((s) => {
-                      const meta = getStudentLiveMeta(s);
-                      const sesi = db.sesi[s.nis];
-                      const pct = Math.round((meta.progress / 40) * 100);
-
-                      return (
-                        <tr key={s.nis} className={`hover:bg-slate-50/90 ${meta.cardBorder}`}>
-                          <td className="py-3 px-4 font-mono font-bold text-slate-900 tabular-nums">
-                            {s.nis}
-                          </td>
-                          <td className="py-3 px-4 font-semibold text-slate-900">{s.nama}</td>
-                          <td className="py-3 px-4 font-semibold text-slate-700">
-                            {s.kelas}
-                          </td>
-                          <td className="py-3 px-4">
-                            <span
-                              className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-md border text-[11px] ${meta.badgeClass}`}
-                            >
-                              {sesi?.status === 'TERKUNCI' && <Lock className="w-3 h-3" />}
-                              {meta.label}
-                            </span>
-                          </td>
-                          <td className="py-3 px-4">
-                            <div className="flex items-center gap-2">
-                              <div className="w-20 h-2 bg-slate-200 rounded-full overflow-hidden">
-                                <div
-                                  className="h-full bg-blue-700 transition-all duration-300"
-                                  style={{ width: `${pct}%` }}
-                                />
-                              </div>
-                              <span className="font-mono font-bold tabular-nums text-slate-800">
-                                {meta.progress}/40
+                        return (
+                          <div
+                            key={q.no}
+                            className={`p-2 rounded-lg border text-xs flex flex-col justify-between ${
+                              isCurrent
+                                ? 'border-blue-600 bg-blue-50/70 ring-2 ring-blue-500/30'
+                                : isAnswered
+                                ? isCorrect
+                                  ? 'border-emerald-300 bg-emerald-50/50'
+                                  : 'border-slate-300 bg-slate-50'
+                                : 'border-slate-200 bg-white opacity-60'
+                            }`}
+                          >
+                            <div className="flex items-center justify-between">
+                              <span className="font-mono font-bold text-slate-700">#{q.no}</span>
+                              <span className="text-[10px] font-semibold text-slate-400">
+                                {q.tipe}
                               </span>
-                              {sesi && sesi.status === 'MENGERJAKAN' && (
-                                <span className="text-[11px] font-mono text-blue-700 font-semibold">
-                                  (Soal #{sesi.soal_terakhir || 1})
-                                </span>
-                              )}
                             </div>
-                          </td>
-                          <td className="py-3 px-4 font-mono font-bold tabular-nums">
-                            <span
-                              className={
-                                meta.violations >= db.pengaturan.batas_pelanggaran
-                                  ? 'text-red-700'
-                                  : meta.violations > 0
-                                  ? 'text-amber-700'
-                                  : 'text-slate-600'
-                              }
-                            >
-                              {meta.violations} / {db.pengaturan.batas_pelanggaran}
-                            </span>
-                          </td>
-                          <td className="py-3 px-4 font-mono tabular-nums text-slate-700">
-                            {meta.remainingText}
-                            {sesi?.tambahan_menit ? ` (+${sesi.tambahan_menit}m)` : ''}
-                          </td>
-                          <td className="py-3 px-4 font-mono tabular-nums text-slate-500">
-                            {meta.lastActive}
-                          </td>
-                          <td className="py-3 px-4 text-right">
-                            <div className="inline-flex items-center gap-1.5">
-                              {sesi?.status === 'TERKUNCI' && (
+                            <div className="mt-1 font-mono font-bold text-[11px] truncate text-slate-900">
+                              {isAnswered ? rawAns : '-'}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                );
+              })()}
+
+              {/* Filter & Auto-Refresh Bar */}
+              <div className="bg-white border border-slate-200 rounded-xl p-4 flex flex-wrap items-center justify-between gap-3">
+                <div className="flex flex-wrap items-center gap-3">
+                  <div className="relative">
+                    <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                    <input
+                      type="text"
+                      value={searchQuery}
+                      onChange={(e) => setSearchQuery(e.target.value)}
+                      placeholder="Cari NIS atau nama siswa..."
+                      className="pl-9 pr-3 py-1.5 text-xs border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-600"
+                    />
+                  </div>
+
+                  <select
+                    value={selectedClassFilter}
+                    onChange={(e) => setSelectedClassFilter(e.target.value)}
+                    className="px-3 py-1.5 text-xs font-medium border border-slate-300 rounded-lg bg-white"
+                  >
+                    <option value="ALL">Semua Kelas ({db.siswa.length} Siswa)</option>
+                    {KELAS_10_LIST.map((kls) => (
+                      <option key={kls} value={kls}>
+                        {kls}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div className="flex flex-wrap items-center gap-2.5 text-xs text-slate-600">
+                  <span className="inline-flex items-center gap-1.5">
+                    <span className="w-2 h-2 rounded-full bg-emerald-600 animate-ping" />
+                    <span>
+                      Pantauan Realtime Instan (Update:{' '}
+                      <strong className="font-mono tabular-nums">{lastRefreshed}</strong>)
+                    </span>
+                  </span>
+                  <button
+                    type="button"
+                    onClick={refreshFromStorage}
+                    className="px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-800 font-semibold rounded-lg flex items-center gap-1.5"
+                  >
+                    <RefreshCw className="w-3.5 h-3.5" />
+                    Segarkan
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void handleSyncToSpreadsheet()}
+                    disabled={isSyncingSheet}
+                    className="px-3 py-1.5 bg-emerald-700 hover:bg-emerald-800 disabled:opacity-60 text-white font-semibold rounded-lg flex items-center gap-1.5"
+                  >
+                    <FileSpreadsheet className={`w-3.5 h-3.5 ${isSyncingSheet ? 'animate-spin' : ''}`} />
+                    {isSyncingSheet ? 'Menyinkronkan...' : 'Sinkron ke Spreadsheet'}
+                  </button>
+                </div>
+              </div>
+
+              {/* Live Student Monitoring Table */}
+              <div className="bg-white border border-slate-200 rounded-xl overflow-hidden">
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left border-collapse text-xs">
+                    <thead>
+                      <tr className="bg-slate-100 border-b border-slate-200 text-slate-700">
+                        <th className="py-3 px-4 font-bold">NIS</th>
+                        <th className="py-3 px-4 font-bold">Nama Siswa</th>
+                        <th className="py-3 px-4 font-bold">Kelas</th>
+                        <th className="py-3 px-4 font-bold">Status Sesi</th>
+                        <th className="py-3 px-4 font-bold">Progres Soal (Realtime)</th>
+                        <th className="py-3 px-4 font-bold">Skor Sementara</th>
+                        <th className="py-3 px-4 font-bold">Pelanggaran</th>
+                        <th className="py-3 px-4 font-bold">Sisa Waktu</th>
+                        <th className="py-3 px-4 font-bold">Aktif Terakhir</th>
+                        <th className="py-3 px-4 font-bold text-right">Kontrol & Pantau</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-200">
+                      {visibleStudents.map((s) => {
+                        const meta = getStudentLiveMeta(s);
+                        const sesi = db.sesi[s.nis];
+                        const pct = Math.round((meta.progress / 40) * 100);
+                        const liveNilai =
+                          meta.progress > 0 || sesi?.status === 'SELESAI'
+                            ? db.nilai[s.nis] || calculateStudentScoreServerSide(db, s.nis)
+                            : null;
+
+                        return (
+                          <tr key={s.nis} className={`hover:bg-slate-50/90 ${meta.cardBorder}`}>
+                            <td className="py-3 px-4 font-mono font-bold text-slate-900 tabular-nums">
+                              {s.nis}
+                            </td>
+                            <td className="py-3 px-4 font-semibold text-slate-900">{s.nama}</td>
+                            <td className="py-3 px-4 font-semibold text-slate-700">
+                              {s.kelas}
+                            </td>
+                            <td className="py-3 px-4">
+                              <span
+                                className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-md border text-[11px] ${meta.badgeClass}`}
+                              >
+                                {sesi?.status === 'TERKUNCI' && <Lock className="w-3 h-3" />}
+                                {meta.label}
+                              </span>
+                            </td>
+                            <td className="py-3 px-4">
+                              <div className="flex items-center gap-2">
+                                <div className="w-20 h-2 bg-slate-200 rounded-full overflow-hidden">
+                                  <div
+                                    className="h-full bg-blue-700 transition-all duration-300"
+                                    style={{ width: `${pct}%` }}
+                                  />
+                                </div>
+                                <span className="font-mono font-bold tabular-nums text-slate-800">
+                                  {meta.progress}/40
+                                </span>
+                                {(sesi || meta.progress > 0) && sesi?.status !== 'SELESAI' && (
+                                  <span className="text-[11px] font-mono text-blue-700 font-semibold">
+                                    (Soal #{sesi?.soal_terakhir || 1})
+                                  </span>
+                                )}
+                              </div>
+                            </td>
+                            <td className="py-3 px-4 font-mono font-bold tabular-nums text-emerald-800">
+                              {liveNilai ? `${liveNilai.nilai_akhir}` : '-'}
+                            </td>
+                            <td className="py-3 px-4 font-mono font-bold tabular-nums">
+                              <span
+                                className={
+                                  meta.violations >= db.pengaturan.batas_pelanggaran
+                                    ? 'text-red-700'
+                                    : meta.violations > 0
+                                    ? 'text-amber-700'
+                                    : 'text-slate-600'
+                                }
+                              >
+                                {meta.violations} / {db.pengaturan.batas_pelanggaran}
+                              </span>
+                            </td>
+                            <td className="py-3 px-4 font-mono tabular-nums text-slate-700">
+                              {meta.remainingText}
+                              {sesi?.tambahan_menit ? ` (+${sesi.tambahan_menit}m)` : ''}
+                            </td>
+                            <td className="py-3 px-4 font-mono tabular-nums text-slate-500">
+                              {meta.lastActive}
+                            </td>
+                            <td className="py-3 px-4 text-right">
+                              <div className="inline-flex items-center gap-1.5">
                                 <button
                                   type="button"
-                                  onClick={() => handleUnlockStudent(s.nis)}
-                                  className="px-2.5 py-1 bg-red-700 hover:bg-red-800 text-white font-semibold rounded-md flex items-center gap-1"
-                                  title="Buka Kunci Layar Siswa"
+                                  onClick={() =>
+                                    setInspectingStudentNis(
+                                      inspectingStudentNis === s.nis ? null : s.nis
+                                    )
+                                  }
+                                  className={`px-2 py-1 font-semibold rounded-md flex items-center gap-1 ${
+                                    inspectingStudentNis === s.nis
+                                      ? 'bg-blue-700 text-white'
+                                      : 'bg-blue-50 hover:bg-blue-100 text-blue-800 border border-blue-200'
+                                  }`}
+                                  title="Pantau Langsung Lembar Jawaban Siswa Ini"
                                 >
-                                  <Unlock className="w-3 h-3" />
-                                  Buka Kunci
+                                  <Eye className="w-3 h-3" />
+                                  Pantau
                                 </button>
-                              )}
-                              {sesi && sesi.status !== 'SELESAI' && (
-                                <>
+                                {sesi?.status === 'TERKUNCI' && (
                                   <button
                                     type="button"
-                                    onClick={() => handleAddExtraTime(s.nis, 10)}
-                                    className="px-2 py-1 bg-slate-100 hover:bg-slate-200 text-slate-800 font-semibold rounded-md flex items-center gap-1"
-                                    title="Tambah Waktu +10 Menit"
+                                    onClick={() => handleUnlockStudent(s.nis)}
+                                    className="px-2.5 py-1 bg-red-700 hover:bg-red-800 text-white font-semibold rounded-md flex items-center gap-1"
+                                    title="Buka Kunci Layar Siswa"
                                   >
-                                    <Clock className="w-3 h-3" />
-                                    +10m
+                                    <Unlock className="w-3 h-3" />
+                                    Buka Kunci
                                   </button>
-                                  <button
-                                    type="button"
-                                    onClick={() => handleResetStudentSession(s.nis)}
-                                    className="px-2 py-1 bg-slate-100 hover:bg-slate-200 text-slate-800 font-semibold rounded-md flex items-center gap-1"
-                                    title="Reset Sesi Perangkat (Jika HP/Laptop siswa rusak)"
-                                  >
-                                    <RotateCcw className="w-3 h-3" />
-                                    Reset
-                                  </button>
-                                  <button
-                                    type="button"
-                                    onClick={() => handleForceSubmitStudent(s.nis)}
-                                    className="px-2 py-1 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-200 font-semibold rounded-md flex items-center gap-1"
-                                    title="Paksa Submit Jawaban Siswa"
-                                  >
-                                    <Send className="w-3 h-3" />
-                                    Submit
-                                  </button>
-                                </>
-                              )}
-                            </div>
-                          </td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              </div>
-              <div className="px-4 py-2.5 bg-slate-50 border-t border-slate-200 text-xs text-slate-500">
-                Menampilkan {visibleStudents.length} siswa Kelas 10 SMKN 2 Gorontalo.
+                                )}
+                                {sesi && sesi.status !== 'SELESAI' && (
+                                  <>
+                                    <button
+                                      type="button"
+                                      onClick={() => handleAddExtraTime(s.nis, 10)}
+                                      className="px-2 py-1 bg-slate-100 hover:bg-slate-200 text-slate-800 font-semibold rounded-md flex items-center gap-1"
+                                      title="Tambah Waktu +10 Menit"
+                                    >
+                                      <Clock className="w-3 h-3" />
+                                      +10m
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => handleResetStudentSession(s.nis)}
+                                      className="px-2 py-1 bg-slate-100 hover:bg-slate-200 text-slate-800 font-semibold rounded-md flex items-center gap-1"
+                                      title="Reset Sesi Perangkat (Jika HP/Laptop siswa rusak)"
+                                    >
+                                      <RotateCcw className="w-3 h-3" />
+                                      Reset
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => handleForceSubmitStudent(s.nis)}
+                                      className="px-2 py-1 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-200 font-semibold rounded-md flex items-center gap-1"
+                                      title="Paksa Submit Jawaban Siswa"
+                                    >
+                                      <Send className="w-3 h-3" />
+                                      Submit
+                                    </button>
+                                  </>
+                                )}
+                              </div>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+                <div className="px-4 py-2.5 bg-slate-50 border-t border-slate-200 text-xs text-slate-500">
+                  Menampilkan {visibleStudents.length} siswa Kelas 10 SMKN 2 Gorontalo.
+                </div>
               </div>
             </div>
-          </div>
-        )}
+          )}
 
         {/* ===================== TAB 2: LOG PELANGGARAN ===================== */}
         {activeTab === 'VIOLATIONS' && (
@@ -2114,7 +2311,8 @@ export const TeacherSupervisorPanel: React.FC<TeacherSupervisorPanelProps> = ({
             </div>
           </div>
         )}
-      </main>
+        </main>
+      </div>
     </div>
   );
 };

@@ -6,7 +6,7 @@ import {
 import { DATA_KELAS_10_SISWA } from '../data/studentsData';
 
 export const DEFAULT_GAS_WEBAPP_URL =
-  'https://script.google.com/macros/s/AKfycbzEN_p5NQvBZmwGwuHuzf_MvSjfvDoQ2Q5mwkm32FJxiMvuOnYx4Hjj4lawiFKEoNhI/exec';
+  'https://script.google.com/macros/s/AKfycbxunHBXeoyU7VZu9rFheHWbMvaZP1SMmh0fg1fTD8m6BkvVqUcSR7ZLUMQYfFwQha7WPw/exec';
 
 // ===================== 9 SPREADSHEET SHEET INTERFACES =====================
 
@@ -527,8 +527,17 @@ export function loadDatabase(): SpreadsheetDatabase {
     if (raw) {
       const parsed = JSON.parse(raw) as SpreadsheetDatabase;
       if (parsed && parsed.bank_soal && parsed.bank_soal.length > 0) {
-        if (!parsed.pengaturan.gas_webapp_url) {
+        if (
+          !parsed.pengaturan.gas_webapp_url ||
+          parsed.pengaturan.gas_webapp_url.includes('AKfycbzEN_p5NQvBZmwGwuHuzf_MvSjfvDoQ2Q5mwkm32FJxiMvuOnYx4Hjj4lawiFKEoNhI') ||
+          parsed.pengaturan.gas_webapp_url.includes('AKfycbxU21xslWFy3JQLX7TqMM0EDeBc5K6xnIFWG76sAdf9zWZMx8P-50kRYka0OBid7muh')
+        ) {
           parsed.pengaturan.gas_webapp_url = DEFAULT_GAS_WEBAPP_URL;
+          try {
+            localStorage.setItem(DB_STORAGE_KEY, JSON.stringify(parsed));
+          } catch {
+            // ignore
+          }
         }
         return parsed;
       }

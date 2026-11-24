@@ -1,13 +1,13 @@
 // Complete Google Apps Script (Code.gs) template for ASSA Informatika SMKN 2 Gorontalo
 // Pre-configured with the user's deployed Web App URL:
-// https://script.google.com/macros/s/AKfycbzEN_p5NQvBZmwGwuHuzf_MvSjfvDoQ2Q5mwkm32FJxiMvuOnYx4Hjj4lawiFKEoNhI/exec
+// https://script.google.com/macros/s/AKfycbxunHBXeoyU7VZu9rFheHWbMvaZP1SMmh0fg1fTD8m6BkvVqUcSR7ZLUMQYfFwQha7WPw/exec
 
 export const CODE_GS_CONTENT = `/**
  * ============================================================================
  * ASSA INFORMATIKA - SMKN 2 GORONTALO (BACKEND GOOGLE APPS SCRIPT / Code.gs)
  * ============================================================================
  * URL Web App Aktif:
- * https://script.google.com/macros/s/AKfycbzEN_p5NQvBZmwGwuHuzf_MvSjfvDoQ2Q5mwkm32FJxiMvuOnYx4Hjj4lawiFKEoNhI/exec
+ * https://script.google.com/macros/s/AKfycbxunHBXeoyU7VZu9rFheHWbMvaZP1SMmh0fg1fTD8m6BkvVqUcSR7ZLUMQYfFwQha7WPw/exec
  * ============================================================================
  */
 
@@ -171,21 +171,35 @@ function handleStudentLogin(body) {
   if (!lock.tryLock(5000)) return { ok: false, retry: true };
   try {
     var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName("Sesi");
-    if (sheet && body.sesi) {
-      var s = body.sesi;
+    if (sheet) {
+      var s = body.sesi || {};
+      var nis = String(s.nis || body.nis || "").trim();
+      var nowIso = new Date().toISOString();
       var row = [
-        String(s.nis || body.nis || ""),
-        String(s.ruang || ""),
-        String(s.token_sesi || ""),
-        String(s.waktu_mulai || new Date().toISOString()),
-        String(s.batas_waktu || ""),
+        nis,
+        String(s.ruang || body.kelas || ""),
+        String(s.token_sesi || body.token_ruang || ("SES-" + nis)),
+        String(s.waktu_mulai || nowIso),
+        String(s.batas_waktu || new Date(Date.now() + 90 * 60000).toISOString()),
         Number(s.tambahan_menit || 0),
         String(s.status || "MENGERJAKAN"),
         Number(s.jumlah_pelanggaran || 0),
         Number(s.soal_terakhir || 1),
-        String(s.waktu_aktif_terakhir || new Date().toISOString())
+        String(s.waktu_aktif_terakhir || nowIso)
       ];
-      sheet.getRange(sheet.getLastRow() + 1, 1, 1, 10).setValues([row]);
+      var sData = sheet.getDataRange().getValues();
+      var foundRow = -1;
+      for (var i = 1; i < sData.length; i++) {
+        if (String(sData[i][0]).trim() === nis) {
+          foundRow = i + 1;
+          break;
+        }
+      }
+      if (foundRow > 1) {
+        sheet.getRange(foundRow, 1, 1, 10).setValues([row]);
+      } else {
+        sheet.getRange(sheet.getLastRow() + 1, 1, 1, 10).setValues([row]);
+      }
     }
     return { ok: true, serverTime: new Date().toISOString() };
   } finally {
@@ -227,7 +241,7 @@ function handleGetQuestionsForStudent(body) {
 }
 
 function handleSaveAnswerBatch(body) {
-  var nis = String(body.nis);
+  var nis = String(body.nis || "").trim();
   var answers = body.answers || {};
   var nowIso = new Date().toISOString();
 
@@ -240,26 +254,46 @@ function handleSaveAnswerBatch(body) {
     var ss = SpreadsheetApp.getActiveSpreadsheet();
     var sheet = ss.getSheetByName("Jawaban");
     var keys = Object.keys(answers);
-    var rowsToAppend = [];
+    var savedCount = 0;
 
-    for (var i = 0; i < keys.length; i++) {
-      var noSoal = keys[i];
-      rowsToAppend.push([nis, Number(noSoal), String(answers[noSoal]), nowIso]);
-    }
+    if (sheet && keys.length > 0) {
+      var existingData = sheet.getDataRange().getValues();
+      var rowIndexMap = {};
+      for (var r = 1; r < existingData.length; r++) {
+        var rNis = String(existingData[r][0]).trim();
+        var rNo = String(existingData[r][1]).trim();
+        if (rNis === nis) {
+          rowIndexMap[rNo] = r + 1;
+        }
+      }
 
-    if (rowsToAppend.length > 0) {
-      var startRow = sheet.getLastRow() + 1;
-      sheet.getRange(startRow, 1, rowsToAppend.length, 4).setValues(rowsToAppend);
+      var rowsToAppend = [];
+      for (var i = 0; i < keys.length; i++) {
+        var noSoal = String(keys[i]).trim();
+        var ansVal = String(answers[noSoal]);
+        var existingRowNum = rowIndexMap[noSoal];
+        if (existingRowNum) {
+          sheet.getRange(existingRowNum, 3, 1, 2).setValues([[ansVal, nowIso]]);
+        } else {
+          rowsToAppend.push([nis, Number(noSoal), ansVal, nowIso]);
+        }
+        savedCount++;
+      }
+
+      if (rowsToAppend.length > 0) {
+        var startRow = sheet.getLastRow() + 1;
+        sheet.getRange(startRow, 1, rowsToAppend.length, 4).setValues(rowsToAppend);
+      }
     }
 
     // Update Sesi sheet soal_terakhir & waktu_aktif_terakhir in real-time
     var sesiSheet = ss.getSheetByName("Sesi");
-    if (sesiSheet) {
+    if (sesiSheet && nis) {
       var sData = sesiSheet.getDataRange().getValues();
       var foundRow = -1;
-      for (var r = 1; r < sData.length; r++) {
-        if (String(sData[r][0]).trim() === nis) {
-          foundRow = r + 1;
+      for (var sr = 1; sr < sData.length; sr++) {
+        if (String(sData[sr][0]).trim() === nis) {
+          foundRow = sr + 1;
           break;
         }
       }
@@ -283,7 +317,7 @@ function handleSaveAnswerBatch(body) {
       }
     }
 
-    return { ok: true, savedCount: rowsToAppend.length, serverTime: nowIso };
+    return { ok: true, savedCount: savedCount, serverTime: nowIso };
   } finally {
     lock.releaseLock();
   }

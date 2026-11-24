@@ -309,16 +309,16 @@ export const StudentExamView: React.FC<StudentExamViewProps> = ({
     [student.nis, student.kelas, unsyncedSet]
   );
 
-  // Trigger debounced real-time sync to Google Apps Script (1.2s after answer change) or immediately when >= 5 answers queued
+  // Trigger ultra-fast debounced real-time sync to Google Apps Script (350ms after answer click/keystroke)
   useEffect(() => {
     if (unsyncedSet.size === 0) return;
-    if (unsyncedSet.size >= 5) {
-      flushAnswerBatchToServer(false);
+    if (unsyncedSet.size >= 3) {
+      void flushAnswerBatchToServer(false);
       return;
     }
     const debounceTimer = window.setTimeout(() => {
-      flushAnswerBatchToServer(false);
-    }, 1200);
+      void flushAnswerBatchToServer(false);
+    }, 350);
     return () => clearTimeout(debounceTimer);
   }, [unsyncedSet, flushAnswerBatchToServer]);
 
@@ -636,7 +636,7 @@ export const StudentExamView: React.FC<StudentExamViewProps> = ({
     setSyncStatus('PENDING_BATCH');
   };
 
-  // Navigate to a question & record farthest/last question visited in real-time
+  // Navigate to a question & record farthest/last question visited in real-time (local + Google Spreadsheet)
   const goToQuestionIndex = (idx: number) => {
     if (idx < 0 || idx >= questions.length) return;
     setCurrentIdx(idx);
@@ -644,11 +644,24 @@ export const StudentExamView: React.FC<StudentExamViewProps> = ({
     const qNo = questions[idx]?.no;
     if (qNo) {
       const db = loadDatabase();
+      const nowIso = new Date().toISOString();
+      const liveAnsweredCount = Object.values(answersRef.current).filter(
+        (a) => a.jawaban && String(a.jawaban).trim() !== ''
+      ).length;
       if (db.sesi[student.nis]) {
         db.sesi[student.nis].soal_terakhir = qNo;
-        db.sesi[student.nis].waktu_aktif_terakhir = new Date().toISOString();
+        db.sesi[student.nis].jumlah_terjawab = liveAnsweredCount;
+        db.sesi[student.nis].waktu_aktif_terakhir = nowIso;
         saveDatabase(db, true);
       }
+      // Push live navigation position to Google Spreadsheet in background
+      void callGasWebApp('saveAnswerBatch', {
+        nis: student.nis,
+        kelas: student.kelas,
+        soal_terakhir: qNo,
+        jumlah_terjawab: liveAnsweredCount,
+        answers: {},
+      });
     }
   };
 
